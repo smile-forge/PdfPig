@@ -33,7 +33,7 @@
         public string Name => TableRegister.NameTable?.FontName;
 
         /// <summary>
-        /// The cmap subtable for Windows Unicode (3, 1).
+        /// The cmap subtable for Windows Unicode (3, 1), or for the Unicode platform (0, *) when the font has no (3, 1).
         /// Can be <see langword="null" />.
         /// </summary>
         public ICMapSubTable WindowsUnicodeCMap { get; }
@@ -87,8 +87,19 @@
                 const int encodingUnicode = 1;
                 const int encodingMacRoman = 0;
 
+                // A font without a Windows Unicode (3, 1) subtable may still map Unicode through the Unicode platform
+                // (0, *) - fonts subset by macOS tooling often carry only that. It means the same code points, so it
+                // stands in for (3, 1); without it a glyph is looked up by its character code instead and the wrong
+                // glyph is drawn.
+                ICMapSubTable? unicodePlatformCMap = null;
+
                 foreach (var subTable in TableRegister.CMapTable.SubTables)
                 {
+                    if (unicodePlatformCMap is null && subTable.PlatformId == TrueTypeCMapPlatform.Unicode)
+                    {
+                        unicodePlatformCMap = subTable;
+                    }
+
                     if (WindowsSymbolCMap is null
                         && subTable.PlatformId == TrueTypeCMapPlatform.Windows
                         && subTable.EncodingId == encodingSymbol)
@@ -108,6 +119,8 @@
                         MacRomanCMap = subTable;
                     }
                 }
+
+                WindowsUnicodeCMap ??= unicodePlatformCMap;
             }
         }
 
