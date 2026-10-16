@@ -1,0 +1,5 @@
+<Project>
+  <!-- Nexaflow integration (nexaflow branch only; never upstreamed): PdfPig has no Directory.Build.props of its own,
+       so built as a submodule of Nexaflow it would inherit Nexaflow's through MSBuild's walk-up - its x64 platform and
+       its warning settings. An empty one here stops the walk. -->
+</Project>
