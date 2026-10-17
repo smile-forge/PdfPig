@@ -62,7 +62,8 @@
                 { NameToken.Size, GetArrayToken(5) }
             });
 
-            byte[] data = new ushort[] { 0, 8192, 16384, 32768, 65535 }.SelectMany(v => BitConverter.GetBytes(v)).ToArray();
+            // Each sample high byte first, as PDF packs a sample wider than a byte.
+            byte[] data = new ushort[] { 0, 8192, 16384, 32768, 65535 }.SelectMany(v => new[] { (byte)(v >> 8), (byte)v }).ToArray();
 
             StreamToken function = new StreamToken(dictionaryToken, data);
 
@@ -89,6 +90,51 @@
             result = function0.Eval(new double[] { 1.0 });
             Assert.Single(result);
             Assert.Equal(1.00, result[0], 2);
+        }
+
+        [Fact]
+        public void TwentyFourBitSamples_AreReadHighByteFirst()
+        {
+            // A table tint as JAMA's articles write their table stripes: one CMYK colour, five times, 24 bits a component.
+            DictionaryToken dictionaryToken = new DictionaryToken(new Dictionary<NameToken, IToken>()
+            {
+                { NameToken.FunctionType, new NumericToken(0) },
+                { NameToken.Domain, GetArrayToken(0, 1) },
+                { NameToken.Range, GetArrayToken(0, 1, 0, 1, 0, 1, 0, 1) },
+                { NameToken.BitsPerSample, new NumericToken(24) },
+                { NameToken.Encode, GetArrayToken(0, 4) },
+                { NameToken.Size, GetArrayToken(5) }
+            });
+
+            byte[] colour = [0x07, 0xAE, 0x14, 0x05, 0x1E, 0xB8, 0x11, 0xEB, 0x85, 0x05, 0x1E, 0xB8];
+            byte[] data = Enumerable.Repeat(colour, 5).SelectMany(c => c).ToArray();
+
+            var function = PdfFunctionParser.Create(new StreamToken(dictionaryToken, data), testPdfTokenScanner, testFilterProvider);
+            var result = function.Eval(new double[] { 0.5 });
+
+            Assert.Equal(0.03, result[0], 3);
+            Assert.Equal(0.02, result[1], 3);
+            Assert.Equal(0.07, result[2], 3);
+            Assert.Equal(0.02, result[3], 3);
+        }
+
+        [Fact]
+        public void FourBitSamples_TakeTheTopOfTheirByteFirst()
+        {
+            DictionaryToken dictionaryToken = new DictionaryToken(new Dictionary<NameToken, IToken>()
+            {
+                { NameToken.FunctionType, new NumericToken(0) },
+                { NameToken.Domain, GetArrayToken(0, 1) },
+                { NameToken.Range, GetArrayToken(0, 1) },
+                { NameToken.BitsPerSample, new NumericToken(4) },
+                { NameToken.Size, GetArrayToken(2) }
+            });
+
+            // 0x0F: the first sample 0, the second 15.
+            var function = PdfFunctionParser.Create(new StreamToken(dictionaryToken, new byte[] { 0x0F }), testPdfTokenScanner, testFilterProvider);
+
+            Assert.Equal(0.0, function.Eval(new double[] { 0 })[0], 3);
+            Assert.Equal(1.0, function.Eval(new double[] { 1 })[0], 3);
         }
 
         [Fact]

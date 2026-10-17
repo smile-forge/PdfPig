@@ -12,7 +12,7 @@ namespace UglyToad.PdfPig.Functions
         /// <summary>
         /// The samples of the function.
         /// </summary>
-        private int[][]? samples;
+        private long[][]? samples;
 
         /// <summary>
         /// Cached numeric values for Size, Encode and Decode entries (parsed once at construction).
@@ -140,7 +140,7 @@ namespace UglyToad.PdfPig.Functions
             private readonly int numberOfOutputValues;
             private readonly ReadOnlySpan<double> sizeValues;
 
-            private readonly int[][] samples;
+            private readonly long[][] samples;
 
             /// <summary>
             /// Constructor.
@@ -150,7 +150,7 @@ namespace UglyToad.PdfPig.Functions
                 ReadOnlySpan<int> inputNext,
                 int numberOfOutputValues,
                 ReadOnlySpan<double> sizeValues,
-                int[][] samples)
+                long[][] samples)
             {
                 in_ = input;
                 inPrev = inputPrev;
@@ -186,7 +186,7 @@ namespace UglyToad.PdfPig.Functions
                     if (inPrev[step] == inNext[step])
                     {
                         coord[step] = inPrev[step];
-                        int[] tmpSample = samples[CalcSampleIndex(coord)];
+                        long[] tmpSample = samples[CalcSampleIndex(coord)];
                         for (int i = 0; i < numberOfOutputValues; ++i)
                         {
                             result[i] = tmpSample[i];
@@ -194,9 +194,9 @@ namespace UglyToad.PdfPig.Functions
                         return;
                     }
                     coord[step] = inPrev[step];
-                    int[] sample1Leaf = samples[CalcSampleIndex(coord)];
+                    long[] sample1Leaf = samples[CalcSampleIndex(coord)];
                     coord[step] = inNext[step];
-                    int[] sample2Leaf = samples[CalcSampleIndex(coord)];
+                    long[] sample2Leaf = samples[CalcSampleIndex(coord)];
                     for (int i = 0; i < numberOfOutputValues; ++i)
                     {
                         result[i] = Interpolate(in_[step], inPrev[step], inNext[step], sample1Leaf[i], sample2Leaf[i]);
@@ -256,7 +256,7 @@ namespace UglyToad.PdfPig.Functions
         /// Get all sample values of this function.
         /// </summary>
         /// <returns>an array with all samples.</returns>
-        private int[][] GetSamples()
+        private long[][] GetSamples()
         {
             if (samples is null)
             {
@@ -285,27 +285,28 @@ namespace UglyToad.PdfPig.Functions
                 }
 
                 int arraySize = (int)sampleCount;
-                samples = new int[arraySize][];
+                samples = new long[arraySize][];
 
                 // PDF spec 1.7 p.171:
                 // Each sample value is represented as a sequence of BitsPerSample bits.
                 // Successive values are adjacent in the bit stream; there is no padding at byte boundaries.
-                var bits = new BitArray(FunctionStream!.Data.ToArray());
-                
+                // The stream is read high bit first, as PDF packs it: a sample wider than a byte spans the bytes in order,
+                // most significant first, and one narrower takes the top of its byte first.
+                var data = FunctionStream!.Data.Span;
+
                 for (int i = 0; i < arraySize; i++)
                 {
-                    samples[i] = new int[nOut];
+                    samples[i] = new long[nOut];
                     for (int k = 0; k < nOut; k++)
                     {
+                        long first = ((long)i * nOut + k) * bitsPerSample;
                         long accum = 0L;
-                        for (int l = bitsPerSample - 1; l >= 0; l--)
+                        for (long bit = first; bit < first + bitsPerSample; bit++)
                         {
-                            accum <<= 1;
-                            accum |= bits[i * nOut * bitsPerSample + (k * bitsPerSample) + l] ? (uint)1 : 0;
+                            accum = (accum << 1) | (uint)((data[(int)(bit >> 3)] >> (7 - (int)(bit & 7))) & 1);
                         }
 
-                        // TODO will this cast work properly for 32 bitsPerSample or should we use long[]?
-                        samples[i][k] = (int)accum;
+                        samples[i][k] = accum;
                     }
                 }
             }
