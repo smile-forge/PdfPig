@@ -37,6 +37,10 @@
 
         private readonly StackDictionary<NameToken, DictionaryToken> markedContentProperties = new StackDictionary<NameToken, DictionaryToken>();
 
+        // The object each named property list is, scoped as the lists are; null where a list is given inline, so that it
+        // shadows a list of the same name further down.
+        private readonly StackDictionary<NameToken, IndirectReference?> markedContentPropertyReferences = new StackDictionary<NameToken, IndirectReference?>();
+
         private readonly StackDictionary<NameToken, Shading> shadingsProperties = new StackDictionary<NameToken, Shading>();
 
         private readonly StackDictionary<NameToken, PatternColor> patternsProperties = new StackDictionary<NameToken, PatternColor>();
@@ -135,6 +139,7 @@
             currentXObjectState.Push(resolved.XObjects);
             extendedGraphicsStates.Push(resolved.ExtendedGraphicsStates);
             markedContentProperties.Push(resolved.MarkedContentProperties);
+            markedContentPropertyReferences.Push(resolved.MarkedContentPropertyReferences);
             shadingsProperties.Push();
             patternsProperties.Push();
 
@@ -162,6 +167,7 @@
             var extendedGraphicsStateDictionaries = new Dictionary<NameToken, DictionaryToken>();
             var colorSpaces = new Dictionary<NameToken, ResourceColorSpace>();
             var properties = new Dictionary<NameToken, DictionaryToken>();
+            var propertyReferences = new Dictionary<NameToken, IndirectReference?>();
 
             if (resourceDictionary.TryGet(NameToken.Font, out var fontBase))
             {
@@ -253,10 +259,12 @@
                     }
 
                     properties[key] = namedProperties;
+                    propertyReferences[key] = pair.Value is IndirectReferenceToken reference ? reference.Data : null;
                 }
             }
 
-            return new ResolvedResources(fonts, directFonts, xObjects, extendedGraphicsStateDictionaries, colorSpaces, properties);
+            return new ResolvedResources(fonts, directFonts, xObjects, extendedGraphicsStateDictionaries, colorSpaces, properties,
+                propertyReferences);
         }
 
         private void LoadPatterns(DictionaryToken resourceDictionary)
@@ -324,6 +332,7 @@
             namedColorSpaces.Pop();
             extendedGraphicsStates.Pop();
             markedContentProperties.Pop();
+            markedContentPropertyReferences.Pop();
             shadingsProperties.Pop();
             patternsProperties.Pop();
         }
@@ -420,14 +429,18 @@
 
             public Dictionary<NameToken, DictionaryToken> MarkedContentProperties { get; }
 
+            public Dictionary<NameToken, IndirectReference?> MarkedContentPropertyReferences { get; }
+
             public ResolvedResources(
                 Dictionary<NameToken, IndirectReference> fonts,
                 IReadOnlyList<(NameToken Name, IFont Font)> directFonts,
                 Dictionary<NameToken, IndirectReference> xObjects,
                 Dictionary<NameToken, DictionaryToken> extendedGraphicsStates,
                 Dictionary<NameToken, ResourceColorSpace> namedColorSpaces,
-                Dictionary<NameToken, DictionaryToken> markedContentProperties)
+                Dictionary<NameToken, DictionaryToken> markedContentProperties,
+                Dictionary<NameToken, IndirectReference?> markedContentPropertyReferences)
             {
+                MarkedContentPropertyReferences = markedContentPropertyReferences;
                 Fonts = fonts;
                 DirectFonts = directFonts;
                 XObjects = xObjects;
@@ -742,6 +755,19 @@
         public DictionaryToken? GetMarkedContentPropertiesDictionary(NameToken name)
         {
             return markedContentProperties.TryGetValue(name, out var result) ? result : null;
+        }
+
+        /// <inheritdoc/>
+        public bool TryGetMarkedContentPropertiesReference(NameToken name, out IndirectReference reference)
+        {
+            if (markedContentPropertyReferences.TryGetValue(name, out var found) && found is { } known)
+            {
+                reference = known;
+                return true;
+            }
+
+            reference = default;
+            return false;
         }
 
         public Shading GetShading(NameToken name)
