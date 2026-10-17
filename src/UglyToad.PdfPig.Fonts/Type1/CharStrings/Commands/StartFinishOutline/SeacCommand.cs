@@ -1,4 +1,7 @@
-﻿namespace UglyToad.PdfPig.Fonts.Type1.CharStrings.Commands.StartFinishOutline
+﻿using System.Collections.Generic;
+using UglyToad.PdfPig.Core;
+
+namespace UglyToad.PdfPig.Fonts.Type1.CharStrings.Commands.StartFinishOutline
 {
     using Encodings;
 
@@ -33,8 +36,16 @@
             var baseCharacter = context.GetCharacter(baseCharacterName);
             var accentCharacter = context.GetCharacter(accentCharacterName);
 
-            // TODO: full seac implementation.
-            context.SetPath(baseCharacter);
+            // The base is drawn where it stands. The accent's origin is placed at (adx, ady) from the base's, measured
+            // from this character's left sidebearing; the accent's own sidebearing (asb) is already in its outline, so it
+            // is taken back off (Adobe Type 1 Font Format, 6.4).
+            var accentOffset = TransformationMatrix.GetTranslationMatrix(
+                context.LeftSideBearingX + accentOriginX - accentLeftSidebearingX,
+                context.LeftSideBearingY + accentOriginY);
+
+            var composite = new List<PdfSubpath>(baseCharacter);
+            composite.AddRange(accentOffset.Transform(accentCharacter));
+            context.SetPath(composite);
 
             context.Stack.Clear();
         }

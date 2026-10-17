@@ -1,6 +1,7 @@
 ﻿namespace UglyToad.PdfPig.Fonts.CompactFontFormat.CharStrings
 {
     using Core;
+using Encodings;
     using System;
     using System.Collections.Generic;
     using System.Globalization;
@@ -53,7 +54,7 @@
 
                 try
                 {
-                    glyph = Run(sequence, defaultWidthX, nominalWidthX);
+                    glyph = Run(name, sequence, defaultWidthX, nominalWidthX);
 
                     glyphs[name] = glyph;
                 }
@@ -66,7 +67,7 @@
             return glyph;
         }
 
-        private static Type2Glyph Run(CommandSequence sequence, double defaultWidthX, double nominalWidthX)
+        private Type2Glyph Run(string name, CommandSequence sequence, double defaultWidthX, double nominalWidthX)
         {
             var context = new Type2BuildCharContext();
 
@@ -125,7 +126,9 @@
                                 }
                                 else
                                 {
-                                    SetWidthFromArgumentsIfPresent(context, nominalWidthX, 0);
+                                    // endchar takes no arguments, or the four of an accented character: a width is the one
+                                    // more (1 or 5).
+                                    SetWidthFromArgumentsIfPresent(context, nominalWidthX, context.Stack.Length >= 4 ? 4 : 0);
                                 }
                                 break;
                             default:
@@ -134,11 +137,43 @@
                         }
                     }
 
+                    if (command.Name == "endchar" && context.Stack.Length == 4)
+                    {
+                        AddAccentedCharacter(name, context, defaultWidthX, nominalWidthX);
+                    }
+
                     command.Run(context);
                 }
             }
 
             return new Type2Glyph(context.Path, context.Width);
+        }
+
+        /// <summary>
+        /// An endchar with four arguments — adx ady bchar achar — is the Type 1 seac carried into Type 2 (Type 2 Charstring
+        /// Format, appendix C): the glyph is this font's StandardEncoding characters bchar and achar, the accent's origin placed
+        /// at (adx, ady) from the base's. A composite naming a character the font lacks, or itself, draws only what it drew.
+        /// </summary>
+        private void AddAccentedCharacter(string name, Type2BuildCharContext context, double defaultWidthX, double nominalWidthX)
+        {
+            var accentOriginX = context.Stack.PopBottom();
+            var accentOriginY = context.Stack.PopBottom();
+            var baseCharacterCode = (int)context.Stack.PopBottom();
+            var accentCharacterCode = (int)context.Stack.PopBottom();
+
+            if (!StandardEncoding.Instance.CodeToNameMap.TryGetValue(baseCharacterCode, out var baseCharacterName)
+                || !StandardEncoding.Instance.CodeToNameMap.TryGetValue(accentCharacterCode, out var accentCharacterName)
+                || baseCharacterName == name || accentCharacterName == name
+                || !CharStrings.ContainsKey(baseCharacterName) || !CharStrings.ContainsKey(accentCharacterName))
+            {
+                return;
+            }
+
+            var baseCharacter = Generate(baseCharacterName, defaultWidthX, nominalWidthX);
+            var accentCharacter = Generate(accentCharacterName, defaultWidthX, nominalWidthX);
+
+            context.Path.AddRange(baseCharacter.Path);
+            context.Path.AddRange(TransformationMatrix.GetTranslationMatrix(accentOriginX, accentOriginY).Transform(accentCharacter.Path));
         }
 
         private static void SetWidthFromArgumentsIfPresent(Type2BuildCharContext context, double nomimalWidthX, int expectedArgumentLength)
