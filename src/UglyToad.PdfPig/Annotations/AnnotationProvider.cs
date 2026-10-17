@@ -133,7 +133,7 @@
                 AppearanceStream? downAppearanceStream = null;
                 AppearanceStream? rollOverAppearanceStream = null;
 
-                if (annotationDictionary.TryGet(NameToken.Ap, out DictionaryToken appearanceDictionary))
+                if (annotationDictionary.TryGet(NameToken.Ap, tokenScanner, out DictionaryToken? appearanceDictionary))
                 {
                     // The normal appearance of this annotation
                     if (AppearanceStreamFactory.TryCreate(appearanceDictionary, NameToken.N, tokenScanner, out AppearanceStream? stream))
@@ -155,7 +155,7 @@
                 }
 
                 string? appearanceState = null;
-                if (annotationDictionary.TryGet(NameToken.As, out NameToken appearanceStateToken))
+                if (annotationDictionary.TryGet(NameToken.As, tokenScanner, out NameToken? appearanceStateToken))
                 {
                     appearanceState = appearanceStateToken.Data;
                 }
