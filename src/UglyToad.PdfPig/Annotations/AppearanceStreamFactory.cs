@@ -9,14 +9,27 @@
     {
         public static bool TryCreate(DictionaryToken appearanceDictionary, NameToken name, IPdfTokenScanner tokenScanner, [NotNullWhen(true)] out AppearanceStream? appearanceStream)
         {
-            if (appearanceDictionary.TryGet(name, out IndirectReferenceToken appearanceReference))
+            appearanceStream = null;
+            if (!appearanceDictionary.TryGet(name, out var entry))
             {
-                var streamToken = tokenScanner.Get(appearanceReference.Data)?.Data as StreamToken;
-                appearanceStream = new AppearanceStream(streamToken);
-                return true;
+                return false;
             }
 
-            if (appearanceDictionary.TryGet(name, out DictionaryToken stateDictionary))
+            // An appearance is a stream, or a dictionary of streams by appearance state (12.5.5); a dictionary of states may be
+            // written in place or by reference, as the stream always is.
+            if (entry is IndirectReferenceToken appearanceReference)
+            {
+                var target = tokenScanner.Get(appearanceReference.Data)?.Data;
+                if (target is not DictionaryToken states)
+                {
+                    appearanceStream = new AppearanceStream(target as StreamToken);
+                    return true;
+                }
+
+                entry = states;
+            }
+
+            if (entry is DictionaryToken stateDictionary)
             {
                 var dict = new Dictionary<string, StreamToken>();
                 foreach (var state in stateDictionary.Data.Keys)
@@ -36,7 +49,6 @@
                 }
             }
 
-            appearanceStream = null;
             return false;
         }
     }
