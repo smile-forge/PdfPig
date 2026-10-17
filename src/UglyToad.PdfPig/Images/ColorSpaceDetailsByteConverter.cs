@@ -51,22 +51,16 @@
                 decoded = UnpackComponents(decoded, bitsPerComponent);
             }
 
-            // Remove padding bytes when the stride width differs from the image width
-            var bytesPerPixel = details.NumberOfColorComponents;
-            var strideWidth = decoded.Length / imageHeight / bytesPerPixel;
-            if (strideWidth != imageWidth)
-            {
-                if (bytesPerPixel > 1 && imageWidth * imageHeight * bytesPerPixel < decoded.Length)
-                {
-                    // Fixed thanks to / see discussion at https://github.com/UglyToad/PdfPig/issues/1183
-                    // Unclear what should be done here, we assume we can just remove the trailing bytes
-                    decoded = decoded.Slice(0, imageWidth * imageHeight * bytesPerPixel);
-                }
-                else
-                {
-                    decoded = RemoveStridePadding(decoded, strideWidth, imageWidth, imageHeight, bytesPerPixel);
-                }
-            }
+            // A row holds as many samples as the image is wide, packed and padded to a whole byte where they are
+            // narrower than one (PDF 2.0, 8.9.3): its length comes from the width, never from how much data there is,
+            // which can run on past the last row (a scanner's whole page under a shorter Height, issue #1183) or stop
+            // short of it (PDFBOX-492-4.jar-8.pdf, page 2).
+            var components = details.NumberOfColorComponents;
+            var rowLength = imageWidth * components;
+            var stride = bitsPerComponent < 8
+                ? (rowLength * bitsPerComponent + 7) / 8 * (8 / bitsPerComponent)
+                : rowLength;
+            decoded = Rows(decoded, stride, rowLength, imageHeight);
 
             ApplyDecode(decoded, details, decode, bitsPerComponent);
 
@@ -208,17 +202,28 @@
             return unpacked;
         }
 
-        private static Span<byte> RemoveStridePadding(Span<byte> input, int strideWidth, int imageWidth, int imageHeight, int multiplier)
+        /// <summary>
+        /// The image's rows, <paramref name="rowLength"/> samples each, out of rows <paramref name="stride"/> samples apart: the
+        /// padding at the end of each row dropped, data past the last row ignored, and rows the data stops short of left at nought.
+        /// </summary>
+        private static Span<byte> Rows(Span<byte> samples, int stride, int rowLength, int rows)
         {
-            int size = imageWidth * imageHeight * multiplier;
-            Span<byte> result = size < input.Length ? input.Slice(0, size) : new byte[size];
-            // See PDFBOX-492-4.jar-8.pdf, page 2 for size > input.Length
-
-            for (int y = 0; y < imageHeight; y++)
+            var size = rowLength * rows;
+            if (stride == rowLength && samples.Length >= size)
             {
-                int sourceIndex = y * strideWidth;
-                int targetIndex = y * imageWidth;
-                input.Slice(sourceIndex, imageWidth).CopyTo(result.Slice(targetIndex, imageWidth));
+                return samples.Slice(0, size);
+            }
+
+            Span<byte> result = new byte[size];
+            for (var row = 0; row < rows; row++)
+            {
+                var from = row * stride;
+                if (from >= samples.Length)
+                {
+                    break;
+                }
+
+                samples.Slice(from, Math.Min(rowLength, samples.Length - from)).CopyTo(result.Slice(row * rowLength));
             }
 
             return result;
