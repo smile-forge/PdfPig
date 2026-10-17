@@ -76,6 +76,13 @@
         DictionaryToken? GetMarkedContentPropertiesDictionary(NameToken name);
 
         /// <summary>
+        /// The indirect object the marked content properties named <paramref name="name"/> are, where the resources refer
+        /// to one rather than give the dictionary inline. An optional content group is known by its object, not by its
+        /// contents: two groups may have equal dictionaries and still be shown and hidden apart (8.11.2).
+        /// </summary>
+        bool TryGetMarkedContentPropertiesReference(NameToken name, out IndirectReference reference);
+
+        /// <summary>
         /// Get all <see cref="PatternColor"/> as a dictionary. Keys are the <see cref="PatternColor"/> names.
         /// </summary>
         IReadOnlyDictionary<NameToken, PatternColor> GetPatterns();
