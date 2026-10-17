@@ -1,5 +1,13 @@
 <Project>
   <!-- Nexaflow integration (nexaflow branch only; never upstreamed): PdfPig has no Directory.Build.props of its own,
        so built as a submodule of Nexaflow it would inherit Nexaflow's through MSBuild's walk-up - its x64 platform and
-       its warning settings. An empty one here stops the walk. -->
+       its warning settings. One here stops the walk.
+
+       It also builds PdfPig optimised in every configuration. Nexaflow's Debug build is how the app is run day to day,
+       and an unoptimised PdfPig reads a page in about twice the time - the parser and the font programs are the
+       hottest code in the PDF reader, and nobody steps through them routinely. Symbols are still produced, so a debugger
+       can step into PdfPig when somebody needs to. -->
+  <PropertyGroup>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
 </Project>
