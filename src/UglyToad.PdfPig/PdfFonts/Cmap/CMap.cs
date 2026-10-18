@@ -186,11 +186,12 @@
                 }
             }
 
-            // If we encounter invalid inputs we read min bytes and convert directly to an integer.
+            // A code no codespace range holds is read as long as the shortest range and converted directly to an integer,
+            // from the byte it begins with — still result[0] — so the codes after it keep their places.
             if (useLenientParsing)
             {
                 bytes.Seek(myPosition);
-                for (var i = 0; i < minCodeLength; i++)
+                for (var i = 1; i < minCodeLength; i++)
                 {
                     result[i] = ReadByte(bytes, useLenientParsing);
                 }
