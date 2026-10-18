@@ -224,13 +224,15 @@
         /// <inheritdoc/>
         public virtual void PopState()
         {
-            if (StackSize > 1)
+            if (CanPopState)
             {
                 GraphicsStack.Pop();
             }
             else
             {
-                const string error = "Cannot execute a pop of the graphics state stack, it would leave the stack empty.";
+                var error = StackSize > 1
+                    ? "Cannot execute a pop of the graphics state stack, it would restore a state saved before the form XObject being run began."
+                    : "Cannot execute a pop of the graphics state stack, it would leave the stack empty.";
                 ParsingOptions.Logger.Error(error);
 
                 if (!ParsingOptions.UseLenientParsing)
@@ -241,6 +243,15 @@
 
             ActiveExtendedGraphicsStateFont = null;
         }
+
+        /// <summary>
+        /// Whether a restore may pop the graphics state: the content being run — a page's, or a form XObject's — never restores
+        /// a state saved before it began, so the stack is never emptied and a form cannot restore its caller's state.
+        /// </summary>
+        protected bool CanPopState => StackSize > Math.Max(1, stateFloor);
+
+        /// <summary>The depth of the graphics state stack the content being run began at.</summary>
+        private int stateFloor = 1;
 
         /// <inheritdoc/>
         public virtual void PushState()
@@ -635,9 +646,11 @@
                 resourcesLoaded = true;
             }
 
-            // 1. Save current state.
+            // 1. Save current state. The form's content runs above it: a Q it does not owe restores nothing of its caller's.
             PushState();
             _formXObjectDepth++;
+            var callerFloor = stateFloor;
+            stateFloor = StackSize;
 
             try
             {
@@ -766,7 +779,13 @@
             {
                 _formXObjectDepth--;
 
-                // 5. Restore saved state.
+                // 5. Restore saved state — and any the form's content saved and left open, which do not outlive it.
+                while (StackSize > stateFloor)
+                {
+                    PopState();
+                }
+
+                stateFloor = callerFloor;
                 PopState();
 
                 if (resourcesLoaded)
