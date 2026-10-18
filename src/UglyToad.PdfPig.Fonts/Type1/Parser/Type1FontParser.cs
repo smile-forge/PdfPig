@@ -246,7 +246,7 @@
 
             for (int i = 0; i < keys; i++)
             {
-                if (!scanner.TryReadToken(out NameToken key))
+                if (!TryReadKey(scanner, out var key))
                 {
                     return new DictionaryToken(dictionary);
                 }
@@ -278,7 +278,7 @@
 
                         previousToken = inner;
                     }
-                    else if (scanner.CurrentToken == OperatorToken.Readonly)
+                    else if (scanner.CurrentToken == OperatorToken.Readonly || scanner.CurrentToken is CommentToken)
                     {
                         // skip
                     }
@@ -294,6 +294,27 @@
             }
 
             return new DictionaryToken(dictionary);
+        }
+
+        /// <summary>
+        /// Reads a dictionary's next key, passing over the comments a font may write between its entries, as FontForge
+        /// writes a font's copyright notices into its FontInfo.
+        /// </summary>
+        private static bool TryReadKey(ISeekableTokenScanner scanner, out NameToken key)
+        {
+            while (scanner.MoveNext())
+            {
+                if (scanner.CurrentToken is CommentToken)
+                {
+                    continue;
+                }
+
+                key = scanner.CurrentToken as NameToken;
+                return key != null;
+            }
+
+            key = null;
+            return false;
         }
 
         private static (ArrayToken encoding, NameToken name) ReadEncoding(ISeekableTokenScanner scanner)

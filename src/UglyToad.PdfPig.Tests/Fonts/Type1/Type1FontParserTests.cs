@@ -74,6 +74,20 @@
             Type1FontParser.Parse(new MemoryInputBytes(bytes), 0, 0, new StackDepthGuard(256));
         }
 
+        [Fact]
+        public void CommentsAmongTheFontInfoEntries_DoNotHideTheEncoding()
+        {
+            var bytes = GetFileBytes("CMR10");
+            var at = Encoding.ASCII.GetString(bytes).IndexOf("/FullName", StringComparison.Ordinal);
+            var comments = Encoding.ASCII.GetBytes("% Copyright notice one\n% Copyright notice two\n");
+            var commented = bytes.Take(at).Concat(comments).Concat(bytes.Skip(at)).ToArray();
+
+            var font = Type1FontParser.Parse(new MemoryInputBytes(commented), 0, 0, new StackDepthGuard(256));
+
+            Assert.Equal("C", font.Encoding[67]);
+            Assert.Equal("a", font.Encoding[97]);
+        }
+
         private static byte[] GetFileBytes(string name)
         {
             var documentFolder = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "Fonts", "Type1"));
