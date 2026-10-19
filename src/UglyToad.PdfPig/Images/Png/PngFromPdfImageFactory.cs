@@ -85,28 +85,32 @@
 
             try
             {
-                bytesPure = ColorSpaceDetailsByteConverter.Convert(image.ColorSpaceDetails!, bytesPure,
-                    image.BitsPerComponent, image.WidthInSamples, image.HeightInSamples, image.Decode, image.RenderingIntent);
-
-                var numberOfComponents = image.ColorSpaceDetails!.BaseNumberOfColorComponents;
-
+                // The soft mask is read first: an image preblended with its matte colour is unmixed by it on the way to colour.
                 ReadOnlySpan<byte> softMask = null;
 
                 bool hasMask = TryGenerateSoftMask(image, out softMask);
                 Func<int, byte> getAlphaChannel = _ => byte.MaxValue;
+                byte[]? alpha = null;
 
                 if (hasMask)
                 {
-                    byte[] softMaskBytes = softMask.ToArray();
+                    alpha = softMask.ToArray();
                     if (image.MaskImage!.NeedsReverseDecode())
                     {
-                        getAlphaChannel = i => Convert.ToByte(255 - softMaskBytes[i]);
+                        for (int i = 0; i < alpha.Length; i++)
+                        {
+                            alpha[i] = (byte)(255 - alpha[i]);
+                        }
                     }
-                    else
-                    {
-                        getAlphaChannel = i => softMaskBytes[i];
-                    }
+
+                    getAlphaChannel = i => alpha[i];
                 }
+
+                bytesPure = ColorSpaceDetailsByteConverter.Convert(image.ColorSpaceDetails!, bytesPure,
+                    image.BitsPerComponent, image.WidthInSamples, image.HeightInSamples, image.Decode, image.RenderingIntent,
+                    hasMask ? image.MaskImage!.GetMatte() : null, alpha);
+
+                var numberOfComponents = image.ColorSpaceDetails!.BaseNumberOfColorComponents;
 
                 var builder = PngBuilder.Create(image.WidthInSamples, image.HeightInSamples, hasMask);
 
