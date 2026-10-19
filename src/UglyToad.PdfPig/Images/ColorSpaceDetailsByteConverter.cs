@@ -45,22 +45,15 @@
                 return decoded;
             }
 
-            if (bitsPerComponent != 8)
-            {
-                // Unpack components such that they occupy one byte each
-                decoded = UnpackComponents(decoded, bitsPerComponent);
-            }
-
-            // A row holds as many samples as the image is wide, packed and padded to a whole byte where they are
-            // narrower than one (PDF 2.0, 8.9.3): its length comes from the width, never from how much data there is,
-            // which can run on past the last row (a scanner's whole page under a shorter Height, issue #1183) or stop
-            // short of it (PDFBOX-492-4.jar-8.pdf, page 2).
+            // A row holds as many samples as the image is wide, packed and padded to a whole byte where they do not
+            // fill one (PDF 2.0, 8.9.3): its length comes from the width, never from how much data there is, which
+            // can run on past the last row (a scanner's whole page under a shorter Height, issue #1183) or stop short
+            // of it (PDFBOX-492-4.jar-8.pdf, page 2). Samples other than a byte wide are unpacked a byte each.
             var components = details.NumberOfColorComponents;
             var rowLength = imageWidth * components;
-            var stride = bitsPerComponent < 8
-                ? (rowLength * bitsPerComponent + 7) / 8 * (8 / bitsPerComponent)
-                : rowLength;
-            decoded = Rows(decoded, stride, rowLength, imageHeight);
+            decoded = bitsPerComponent == 8
+                ? Rows(decoded, rowLength, imageHeight)
+                : UnpackRows(decoded, bitsPerComponent, rowLength, imageHeight);
 
             ApplyDecode(decoded, details, decode, bitsPerComponent);
 
@@ -69,10 +62,10 @@
 
         private static void ApplyDecode(Span<byte> samples, ColorSpaceDetails details, IReadOnlyList<double>? decode, int bitsPerComponent)
         {
-            if (bitsPerComponent == 16)
+            if (bitsPerComponent > 8)
             {
                 // bpc passed to ApplyDecode reflects the *post-unpack* sample range:
-                //   - 16bpc is reduced to its 8-bit high-byte equivalent inside UnpackComponents.
+                //   - a sample wider than a byte is reduced to its eight most significant bits inside UnpackRows.
                 //   - sub-8bpc samples remain in [0, 2^bpc - 1] after unpacking.
                 bitsPerComponent = 8;
             }
@@ -167,35 +160,59 @@
             return true;
         }
 
-        private static Span<byte> UnpackComponents(Span<byte> input, int bitsPerComponent)
+        /// <summary>
+        /// The image's rows, <paramref name="rowLength"/> samples each, out of <paramref name="input"/>'s rows of
+        /// <paramref name="bitsPerComponent"/>-bit samples, packed most significant bit first, each row starting on a byte
+        /// (PDF 2.0, 8.9.3): a sample a byte, one wider than a byte kept to its eight most significant bits. Rows the data stops
+        /// short of are left at nought, and data past the last row is ignored.
+        /// </summary>
+        /// <remarks>
+        /// Any depth is read alike, not only those an image dictionary may give: a <c>JPXDecode</c> image's is its codestream's
+        /// (PDF 2.0, 8.9.5), and 12 bits is common.
+        /// </remarks>
+        private static Span<byte> UnpackRows(ReadOnlySpan<byte> input, int bitsPerComponent, int rowLength, int rows)
         {
-            if (bitsPerComponent == 16) // Example with MOZILLA-3136-0.pdf (page 3)
+            if (bitsPerComponent is < 1 or > 32)
             {
-                int size = input.Length / 2;
-                var unpacked16 = input.Slice(0, size); // In place
-
-                for (int b = 0; b < size; ++b)
-                {
-                    int i = 2 * b;
-                    // Convert to UInt16 and divide by 256
-                    unpacked16[b] = (byte)((ushort)(input[i + 1] | input[i] << 8) / 256);
-                }
-
-                return unpacked16;
+                throw new ArgumentOutOfRangeException(nameof(bitsPerComponent), bitsPerComponent, "A sample is from 1 to 32 bits.");
             }
 
-            int end = 8 - bitsPerComponent;
+            int rowBytes = (int)(((long)rowLength * bitsPerComponent + 7) / 8);
+            int narrowing = Math.Max(bitsPerComponent - 8, 0);
+            ulong mask = (1UL << bitsPerComponent) - 1;
 
-            Span<byte> unpacked = new byte[input.Length * (int)Math.Ceiling((end + 1) / (double)bitsPerComponent)];
-
-            int right = (int)Math.Pow(2, bitsPerComponent) - 1;
-
-            int u = 0;
-            foreach (byte b in input)
+            Span<byte> unpacked = new byte[rowLength * rows];
+            for (int row = 0; row < rows; row++)
             {
-                for (int i = end; i >= 0; i -= bitsPerComponent)
+                int from = row * rowBytes;
+                if (from >= input.Length)
                 {
-                    unpacked[u++] = (byte)((b >> i) & right);
+                    break;
+                }
+
+                ReadOnlySpan<byte> source = input.Slice(from, Math.Min(rowBytes, input.Length - from));
+                Span<byte> target = unpacked.Slice(row * rowLength, rowLength);
+
+                // Whole bytes go into the accumulator at the bottom and samples leave it from the top. Fewer bits than a sample
+                // are ever left over, so it never holds more than 39 that are still to be read.
+                ulong held = 0;
+                int count = 0;
+                int at = 0;
+                for (int i = 0; i < target.Length; i++)
+                {
+                    while (count < bitsPerComponent)
+                    {
+                        if (at == source.Length)
+                        {
+                            return unpacked;
+                        }
+
+                        held = (held << 8) | source[at++];
+                        count += 8;
+                    }
+
+                    count -= bitsPerComponent;
+                    target[i] = (byte)(((held >> count) & mask) >> narrowing);
                 }
             }
 
@@ -203,29 +220,19 @@
         }
 
         /// <summary>
-        /// The image's rows, <paramref name="rowLength"/> samples each, out of rows <paramref name="stride"/> samples apart: the
-        /// padding at the end of each row dropped, data past the last row ignored, and rows the data stops short of left at nought.
+        /// The image's rows, <paramref name="rowLength"/> samples each, out of samples a byte each: data past the last row
+        /// ignored, and rows the data stops short of left at nought.
         /// </summary>
-        private static Span<byte> Rows(Span<byte> samples, int stride, int rowLength, int rows)
+        private static Span<byte> Rows(Span<byte> samples, int rowLength, int rows)
         {
             var size = rowLength * rows;
-            if (stride == rowLength && samples.Length >= size)
+            if (samples.Length >= size)
             {
                 return samples.Slice(0, size);
             }
 
             Span<byte> result = new byte[size];
-            for (var row = 0; row < rows; row++)
-            {
-                var from = row * stride;
-                if (from >= samples.Length)
-                {
-                    break;
-                }
-
-                samples.Slice(from, Math.Min(rowLength, samples.Length - from)).CopyTo(result.Slice(row * rowLength));
-            }
-
+            samples.CopyTo(result);
             return result;
         }
     }
