@@ -87,7 +87,7 @@
                 ? Rows(decoded, rowLength, imageHeight)
                 : UnpackRows(decoded, bitsPerComponent, rowLength, imageHeight);
 
-            ApplyDecode(decoded, details, decode, bitsPerComponent);
+            decoded = ApplyDecode(decoded, source, details, decode, bitsPerComponent);
 
             if (matte is not null && !opacity.IsEmpty && MatteSamples(details, matte) is { } matteSamples)
             {
@@ -97,13 +97,7 @@
                     details = indexed.BaseColorSpace;
                 }
 
-                // The samples handed in may be the image's own, kept for the next caller: those are unmixed in a copy, so that
-                // a second conversion does not take the matte out twice.
-                if (decoded.Overlaps(source))
-                {
-                    decoded = decoded.ToArray();
-                }
-
+                decoded = Writable(decoded, source);
                 Unblend(decoded, matteSamples, opacity);
             }
 
@@ -181,7 +175,7 @@
             }
         }
 
-        private static void ApplyDecode(Span<byte> samples, ColorSpaceDetails details, IReadOnlyList<double>? decode, int bitsPerComponent)
+        private static Span<byte> ApplyDecode(Span<byte> samples, ReadOnlySpan<byte> source, ColorSpaceDetails details, IReadOnlyList<double>? decode, int bitsPerComponent)
         {
             if (bitsPerComponent > 8)
             {
@@ -195,7 +189,7 @@
             int sampleMax = (1 << bitsPerComponent) - 1;
             if (sampleMax <= 0)
             {
-                return;
+                return samples;
             }
 
             Span<double> defaults = components <= 32 ? stackalloc double[2 * components] : new double[2 * components];
@@ -213,9 +207,11 @@
             {
                 if (isIndexed || bitsPerComponent == 8)
                 {
-                    return;
+                    return samples;
                 }
             }
+
+            samples = Writable(samples, source);
 
             // Per PDF 2.0 8.9.5.10, for each component c with raw sample S in [0, sampleMax]:
             //     x_c = Dmin_c + S * (Dmax_c - Dmin_c) / sampleMax
@@ -266,6 +262,18 @@
 
                 samples[i] = (byte)rounded;
             }
+
+            return samples;
+        }
+
+        /// <summary>
+        /// <paramref name="samples"/>, or a copy of them where they are still <paramref name="source"/>, the caller's: an image
+        /// keeps the samples it hands out (<see cref="XObjects.XObjectImage"/> reads them once), so a conversion writes only into
+        /// a buffer of its own, and the next conversion of the same image starts from the same samples.
+        /// </summary>
+        private static Span<byte> Writable(Span<byte> samples, ReadOnlySpan<byte> source)
+        {
+            return samples.Overlaps(source) ? samples.ToArray() : samples;
         }
 
         private static bool IsDefaultDecode(IReadOnlyList<double> decode, int components, ReadOnlySpan<double> defaults)

@@ -166,46 +166,27 @@
             return BaseColorSpace.Process(components, intent);
         }
 
+        /// <summary>
+        /// The colours <paramref name="input"/>'s indices name in the colour table, into a buffer of their own: the indices
+        /// are left as they are, since they may be an image's own samples, kept for its next conversion.
+        /// </summary>
         internal Span<byte> UnwrapIndexedColorSpaceBytes(Span<byte> input)
         {
             // ISO 32000-2 (PDF 2.0) 8.6.6.3: an index outside 0..hival is adjusted to the
             // nearest valid value. Indices arrive here as (unsigned) bytes (image samples, or
             // the already-clamped content-stream index), so only the upper bound can be
             // exceeded.
-            if (HiVal != byte.MaxValue)
-            {
-                for (int k = 0; k < input.Length; ++k)
-                {
-                    ref byte c = ref input[k];
-                    if (c > HiVal)
-                    {
-                        c = HiVal;
-                    }
-                }
-            }
-
             int components = BaseColorSpace.NumberOfColorComponents;
-
-            if (components == 1)
-            {
-                // One index byte becomes one colour byte, so the lookup is done in place.
-                for (var i = 0; i < input.Length; ++i)
-                {
-                    ref byte b = ref input[i];
-                    b = ColorTable[b];
-                }
-
-                return input;
-            }
 
             Span<byte> result = new byte[input.Length * components];
             int index = 0;
 
             foreach (var x in input)
             {
+                int entry = Math.Min(x, HiVal) * components;
                 for (var j = 0; j < components; ++j)
                 {
-                    result[index++] = ColorTable[x * components + j];
+                    result[index++] = ColorTable[entry + j];
                 }
             }
 
