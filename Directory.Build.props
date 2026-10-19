@@ -10,4 +10,11 @@
   <PropertyGroup>
     <Optimize>true</Optimize>
   </PropertyGroup>
+  <!-- Upstream's own warnings are upstream's to fix: a Nexaflow build reports only Nexaflow's, so one there stands out.
+       Compiler warnings, nullable ones among them, are not raised for this code, nor are analyzers run on it. -->
+  <PropertyGroup>
+    <WarningLevel>0</WarningLevel>
+    <NoWarn>$(NoWarn);nullable</NoWarn>
+    <RunAnalyzers>false</RunAnalyzers>
+  </PropertyGroup>
 </Project>
