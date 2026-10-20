@@ -841,8 +841,9 @@
             {
                 var image = Assert.Single(document.GetPage(1).GetImages());
 
-                Assert.Equal(new PdfPoint(100, 100), image.BoundingBox.BottomLeft);
-                Assert.Equal(new PdfPoint(260, 350), image.BoundingBox.TopRight);
+                // The box turns with the picture: its own bottom left lands at the bottom right of where it stands.
+                Assert.Equal(new PdfPoint(260, 100), image.BoundingBox.BottomLeft);
+                Assert.Equal(new PdfPoint(100, 350), image.BoundingBox.TopRight);
                 Assert.Equal(imageBytes, image.RawMemory.ToArray());
             }
         }
