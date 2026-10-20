@@ -820,6 +820,34 @@
         }
 
         [Fact]
+        public void CanWriteJpegTurnedByItsPlacement()
+        {
+            var builder = new PdfDocumentBuilder();
+            var page = builder.AddPage(PageSize.A4);
+
+            var imageBytes = File.ReadAllBytes(IntegrationHelpers.GetDocumentPath("smile-250-by-160.jpg", false));
+
+            // A quarter turn: the 250 by 160 picture stands 160 wide and 250 high, from (100, 100).
+            var turned = TransformationMatrix.FromValues(0, 250, -160, 0, 260, 100);
+            using (var stream = new MemoryStream(imageBytes))
+            {
+                page.AddJpeg(stream, turned);
+            }
+
+            var bytes = builder.Build();
+            WriteFile(nameof(CanWriteJpegTurnedByItsPlacement), bytes);
+
+            using (var document = PdfDocument.Open(bytes))
+            {
+                var image = Assert.Single(document.GetPage(1).GetImages());
+
+                Assert.Equal(new PdfPoint(100, 100), image.BoundingBox.BottomLeft);
+                Assert.Equal(new PdfPoint(260, 350), image.BoundingBox.TopRight);
+                Assert.Equal(imageBytes, image.RawMemory.ToArray());
+            }
+        }
+
+        [Fact]
         public void CanWrite2PagesSharingJpeg()
         {
             var builder = new PdfDocumentBuilder();
