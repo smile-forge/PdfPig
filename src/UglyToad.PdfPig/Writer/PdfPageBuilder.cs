@@ -627,6 +627,20 @@
                     info.Height);
             }
 
+            fileStream.Seek(startFrom, SeekOrigin.Begin);
+            return AddJpeg(fileStream, Placement(placementRectangle));
+        }
+
+        /// <summary>
+        /// Adds the JPEG image represented by the input stream, drawn through <paramref name="placement"/>: the matrix
+        /// that takes the image's unit square onto the page. The image can be turned or mirrored as it is placed — as its
+        /// EXIF orientation asks — while its compressed data is written as it is.
+        /// </summary>
+        public AddedImage AddJpeg(Stream fileStream, TransformationMatrix placement)
+        {
+            var startFrom = fileStream.Position;
+            var info = JpegHandler.GetInformation(fileStream);
+
             byte[] data;
             using (var memory = new MemoryStream())
             {
@@ -662,24 +676,9 @@
             };
 
             var reference = documentBuilder.AddImage(new DictionaryToken(imgDictionary), data);
-            var resources = pageDictionary.GetOrCreateDict(NameToken.Resources);
-            var xObjects = resources.GetOrCreateDict(NameToken.Xobject);
-
-            var key = NameToken.Create(xobjectsNames.NewName());
-            xObjects[key] = reference;
-
-            currentStream.Add(Push.Value);
-            // This needs to be the placement rectangle.
-            currentStream.Add(new ModifyCurrentTransformationMatrix(new[]
-            {
-                placementRectangle.Width, 0,
-                0, placementRectangle.Height,
-                placementRectangle.BottomLeft.X, placementRectangle.BottomLeft.Y
-            }));
-            currentStream.Add(new InvokeNamedXObject(key));
-            currentStream.Add(Pop.Value);
-
-            return new AddedImage(reference.Data, info.Width, info.Height);
+            var image = new AddedImage(reference.Data, info.Width, info.Height);
+            AddImage(image, placement);
+            return image;
         }
 
         /// <summary>
@@ -695,6 +694,14 @@
         /// or <see cref="AddPng(byte[], PdfRectangle)"/> sharing the same image to prevent duplication.
         /// </summary>
         public void AddImage(AddedImage image, PdfRectangle placementRectangle)
+        => AddImage(image, Placement(placementRectangle));
+
+        /// <summary>
+        /// Adds the image previously added using <see cref="AddJpeg(byte[], PdfRectangle)"/>
+        /// or <see cref="AddPng(byte[], PdfRectangle)"/>, drawn through <paramref name="placement"/>: the matrix that
+        /// takes the image's unit square onto the page, so it can be turned or mirrored as it is placed.
+        /// </summary>
+        public void AddImage(AddedImage image, TransformationMatrix placement)
         {
             var resources = pageDictionary.GetOrCreateDict(NameToken.Resources);
             var xObjects = resources.GetOrCreateDict(NameToken.Xobject);
@@ -703,16 +710,21 @@
             xObjects[key] = new IndirectReferenceToken(image.Reference);
 
             currentStream.Add(Push.Value);
-            // This needs to be the placement rectangle.
             currentStream.Add(new ModifyCurrentTransformationMatrix(new[]
             {
-                placementRectangle.Width, 0,
-                0, placementRectangle.Height,
-                placementRectangle.BottomLeft.X, placementRectangle.BottomLeft.Y
+                placement.A, placement.B,
+                placement.C, placement.D,
+                placement.E, placement.F
             }));
             currentStream.Add(new InvokeNamedXObject(key));
             currentStream.Add(Pop.Value);
         }
+
+        /// <summary>
+        /// The matrix that draws an image's unit square into <paramref name="rectangle"/>.
+        /// </summary>
+        private static TransformationMatrix Placement(PdfRectangle rectangle)
+            => TransformationMatrix.FromValues(rectangle.Width, 0, 0, rectangle.Height, rectangle.BottomLeft.X, rectangle.BottomLeft.Y);
 
         /// <summary>
         /// Adds the PNG image represented by the input bytes at the specified location.
