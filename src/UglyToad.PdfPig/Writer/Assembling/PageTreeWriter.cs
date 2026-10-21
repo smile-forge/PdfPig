@@ -2,6 +2,8 @@ namespace UglyToad.PdfPig.Writer.Assembling;
 
 using System.Collections.Generic;
 using System.Linq;
+using Core;
+using Geometry;
 using Tokens;
 
 /// <summary>
@@ -111,6 +113,20 @@ internal sealed class PageTreeWriter
                 continue;
             }
 
+            if (name.Equals(NameToken.B) && page.IsSplit)
+            {
+                var beads = (source.Resolve<ArrayToken>(entry.Value)?.Data ?? [])
+                    .Where(bead => context.IsOn(slot, bead))
+                    .Select(bead => context.Copy(source, bead))
+                    .ToList();
+                if (beads.Count > 0)
+                {
+                    dictionary[NameToken.B] = new ArrayToken(beads);
+                }
+
+                continue;
+            }
+
             dictionary[name] = context.Copy(source, entry.Value);
         }
 
@@ -136,12 +152,63 @@ internal sealed class PageTreeWriter
             dictionary[NameToken.Resources] = new DictionaryToken(new Dictionary<NameToken, IToken>());
         }
 
+        if (slot.Region is { } region)
+        {
+            Show(dictionary, region);
+        }
+
         structure.Place(context, slot, dictionary);
 
         dictionary[NameToken.Type] = NameToken.Page;
         dictionary[NameToken.Parent] = parent;
         context.Writer.WriteToken(new DictionaryToken(dictionary), slot.Reference);
     }
+
+    /// <summary>
+    /// Shows only <paramref name="region"/> of a page: it becomes the crop box, and the trim, bleed and art boxes are held
+    /// to it — one that lies wholly outside it is the other part's, and goes.
+    /// </summary>
+    private static void Show(Dictionary<NameToken, IToken> page, PdfRectangle region)
+    {
+        page[NameToken.CropBox] = Rectangle(region);
+
+        foreach (var name in Bounded)
+        {
+            if (!page.TryGetValue(name, out var box))
+            {
+                continue;
+            }
+
+            var held = Numbers(box) is { } written ? written.Intersect(region) : region;
+            if (held is { } within)
+            {
+                page[name] = Rectangle(within);
+            }
+            else
+            {
+                page.Remove(name);
+            }
+        }
+    }
+
+    /// <summary>A box written as four numbers, as a rectangle; null when it is written otherwise.</summary>
+    private static PdfRectangle? Numbers(IToken box)
+    {
+        if (box is not ArrayToken { Length: 4 } array || !array.Data.All(item => item is NumericToken))
+        {
+            return null;
+        }
+
+        var n = array.Data.Cast<NumericToken>().Select(number => number.Double).ToArray();
+        return new PdfRectangle(System.Math.Min(n[0], n[2]), System.Math.Min(n[1], n[3]), System.Math.Max(n[0], n[2]), System.Math.Max(n[1], n[3]));
+    }
+
+    private static ArrayToken Rectangle(PdfRectangle rectangle) => new([
+        new NumericToken(rectangle.Left), new NumericToken(rectangle.Bottom),
+        new NumericToken(rectangle.Right), new NumericToken(rectangle.Top),
+    ]);
+
+    private static readonly NameToken[] Bounded = [NameToken.TrimBox, NameToken.BleedBox, NameToken.ArtBox];
 
     private sealed class Node
     {

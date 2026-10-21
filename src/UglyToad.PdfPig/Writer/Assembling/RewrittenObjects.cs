@@ -16,6 +16,8 @@ internal sealed class RewrittenObjects
     private readonly AssemblyContext context;
     private readonly List<Rewrite> claimed = new();
     private readonly Dictionary<AssemblySource, Dictionary<IndirectReference, Rewrite>> bySource = new();
+    private readonly Dictionary<(AssemblySource, IndirectReference), IndirectReferenceToken> placeholders = new();
+    private long nextPlaceholder = -1;
     private bool written;
 
     public RewrittenObjects(AssemblyContext context)
@@ -91,6 +93,24 @@ internal sealed class RewrittenObjects
         }
 
         source.References.Add(reference, output);
+    }
+
+    /// <summary>
+    /// A reference a source token can hold to stand for an object the assembly writes itself — one part of a split
+    /// page — so an edit in the source's terms can point at it: copied, it becomes <paramref name="output"/>. Its
+    /// object number is negative, which no source object has.
+    /// </summary>
+    public IndirectReferenceToken Placeholder(AssemblySource source, IndirectReferenceToken output)
+    {
+        if (placeholders.TryGetValue((source, output.Data), out var known))
+        {
+            return known;
+        }
+
+        var handle = new IndirectReferenceToken(new IndirectReference(nextPlaceholder--, 0));
+        source.References.Add(handle.Data, output);
+        placeholders[(source, output.Data)] = handle;
+        return handle;
     }
 
     /// <summary>

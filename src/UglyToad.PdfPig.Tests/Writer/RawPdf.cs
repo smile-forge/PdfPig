@@ -113,6 +113,15 @@ namespace UglyToad.PdfPig.Tests.Writer
             return this;
         }
 
+        /// <summary>
+        /// Draws page <paramref name="index"/> with <paramref name="content"/> in place of its word; font /F1 is Helvetica.
+        /// </summary>
+        public SampleDocument Drawn(int index, string content)
+        {
+            contents[index] = content;
+            return this;
+        }
+
         public byte[] Build()
         {
             for (var i = 0; i < words.Length; i++)

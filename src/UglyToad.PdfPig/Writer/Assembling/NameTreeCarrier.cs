@@ -84,9 +84,15 @@ internal sealed class NameTreeCarrier : IAssemblyCarrier
     /// </summary>
     private static IToken? Carried(AssemblyContext context, AssemblySource source, IToken value, bool destinations)
     {
-        if (destinations && context.IsPageLeftOut(source, context.Destinations.Resolve(source, value).Page))
+        if (destinations)
         {
-            return null;
+            var target = context.Destinations.Resolve(source, value);
+            if (context.IsPageLeftOut(source, target.Page))
+            {
+                return null;
+            }
+
+            value = context.Retargeted(source, value, target);
         }
 
         var copied = context.Copy(source, value);

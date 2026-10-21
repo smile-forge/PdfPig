@@ -1,6 +1,7 @@
 namespace UglyToad.PdfPig.Writer.Assembling;
 
 using System.Collections.Generic;
+using System.Linq;
 using Core;
 using Tokens;
 
@@ -26,15 +27,17 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
                 }
 
                 var kept = new List<IndirectReference>();
+                var parts = new List<AssemblySlot?>();
                 foreach (var bead in Ring(source, dictionary))
                 {
                     if (!context.Rewrites.IsDropped(source, bead)
                         && source.Resolve<DictionaryToken>(new IndirectReferenceToken(bead)) is { } beadDictionary
                         && beadDictionary.TryGet(NameToken.P, out var page)
                         && page is IndirectReferenceToken pageReference
-                        && source.PageAt(pageReference.Data) is { IsKept: true })
+                        && source.PageAt(pageReference.Data) is { IsKept: true } keptPage)
                     {
                         kept.Add(bead);
+                        parts.Add(keptPage.IsSplit ? Part(context, source, bead, beadDictionary, keptPage) : null);
                     }
                     else
                     {
@@ -62,10 +65,15 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
                 {
                     var next = outputs[(i + 1) % outputs.Count];
                     var previous = outputs[(i - 1 + outputs.Count) % outputs.Count];
+                    var part = parts[i]?.Reference;
                     context.Rewrites.After(
                         source,
                         kept[i],
-                        copied => copied.With(NameToken.N, next).With(NameToken.V, previous).With(NameToken.T, threadOutput));
+                        copied =>
+                        {
+                            var linked = copied.With(NameToken.N, next).With(NameToken.V, previous).With(NameToken.T, threadOutput);
+                            return part is null ? linked : linked.With(NameToken.P, part);
+                        });
                 }
 
                 threads.Add((source, thread));
@@ -87,6 +95,26 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
         }
 
         catalog[NameToken.Threads] = new ArrayToken(written);
+    }
+
+    /// <summary>
+    /// The part of a split page a bead lies in — the one holding its rectangle's centre — put on that part.
+    /// </summary>
+    private static AssemblySlot? Part(AssemblyContext context, AssemblySource source, IndirectReference bead, DictionaryToken dictionary, SourcePage page)
+    {
+        var slot = page.Slot;
+        if (source.Array(dictionary, NameToken.R) is { Length: 4 } rectangle)
+        {
+            var n = rectangle.Data.Select(item => source.Resolve<NumericToken>(item)?.Double ?? 0).ToArray();
+            slot = page.SlotAt((n[0] + n[2]) / 2, (n[1] + n[3]) / 2);
+        }
+
+        if (slot is not null)
+        {
+            context.PlaceOn(source, bead, slot);
+        }
+
+        return slot;
     }
 
     /// <summary>
