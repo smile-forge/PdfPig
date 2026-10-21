@@ -123,16 +123,21 @@ internal sealed class DocumentAssembly
             var source = byDocument[assembled.Document];
             var page = source.Page(assembled.PageNumber);
 
-            if (page.IsKept)
+            if (page.Slots.Any(placed => Equals(placed.Region, assembled.Region)))
             {
                 throw new ArgumentException(
-                    $"Page {assembled.PageNumber} of a document is assembled more than once; a page may appear only once.",
+                    $"Page {assembled.PageNumber} of a document is assembled more than once; a page, or a part of one, may appear only once.",
                     nameof(pages));
             }
 
-            var slot = new AssemblySlot(i, source, page, writer.ReserveObjectNumber(), assembled.Tag);
-            page.Slot = slot;
-            source.References.Add(page.Reference, slot.Reference);
+            var slot = new AssemblySlot(i, source, page, writer.ReserveObjectNumber(), assembled.Tag, assembled.Region);
+            if (!page.IsKept)
+            {
+                // What refers to the page lands on its first part, unless it lies in another.
+                source.References.Add(page.Reference, slot.Reference);
+            }
+
+            page.Add(slot);
             slots.Add(slot);
 
             if (lastNumber.TryGetValue(source, out var last) && page.Number < last)

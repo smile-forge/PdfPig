@@ -4,7 +4,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Content;
 using Core;
+using Geometry;
+using Graphics;
+using Logging;
 using Parser.Parts;
 using Tokens;
 
@@ -38,6 +42,8 @@ internal sealed class StructureCarrier : IAssemblyCarrier
     private readonly HashSet<string> idNames = new(StringComparer.Ordinal);
     private readonly List<Placed> rootKids = new();
     private readonly List<Placed> placedDirectly = new();
+    private readonly Dictionary<AssemblySlot, (int Key, int SourceKey)> partKeys = new();
+    private readonly Dictionary<(SourcePage Page, int Mcid), AssemblySlot> contentParts = new();
     private IndirectReferenceToken? root;
     private int nextKey;
 
@@ -103,6 +109,13 @@ internal sealed class StructureCarrier : IAssemblyCarrier
             {
                 figures[slot] = new Figure(slot, context.Writer.ReserveObjectNumber(), nextKey++);
             }
+
+            // A split page's later parts draw the same content, and need keys of their own for it.
+            if (treesBySource.ContainsKey(slot.Source) && slot.Page.IsSplit && slot != slot.Page.Slot
+                && AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, slot.Source.Scanner) is { } sourceKey)
+            {
+                partKeys[slot] = (nextKey++, sourceKey);
+            }
         }
 
         PlaceTopElements(context);
@@ -121,7 +134,11 @@ internal sealed class StructureCarrier : IAssemblyCarrier
 
         if (treesBySource.TryGetValue(slot.Source, out var tree))
         {
-            if (AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, slot.Source.Scanner) is { } sourceKey)
+            if (partKeys.TryGetValue(slot, out var part))
+            {
+                page[NameToken.StructParents] = new NumericToken(part.Key);
+            }
+            else if (AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, slot.Source.Scanner) is { } sourceKey)
             {
                 page[NameToken.StructParents] = new NumericToken(sourceKey + tree.Offset);
             }
@@ -263,21 +280,21 @@ internal sealed class StructureCarrier : IAssemblyCarrier
         var source = tree.Source;
         var visited = new HashSet<IndirectReference>();
 
-        foreach (var slot in context.Slots)
+        foreach (var page in context.Slots.Where(slot => slot.Source == source).Select(slot => slot.Page).Distinct())
         {
-            if (slot.Source != source)
-            {
-                continue;
-            }
-
-            if (AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, source.Scanner) is { } pageKey)
+            if (AssemblyTokens.Integer(page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, source.Scanner) is { } pageKey)
             {
                 tree.Kept.Add(pageKey);
             }
 
-            Resources(context, tree, Inherited(slot.Page, NameToken.Resources), visited, 0);
+            if (page.IsSplit)
+            {
+                LocateContent(context, tree, page);
+            }
 
-            foreach (var entry in slot.Page.Annotations)
+            Resources(context, tree, Inherited(page, NameToken.Resources), visited, 0);
+
+            foreach (var entry in page.Annotations)
             {
                 if (entry is IndirectReferenceToken reference && !context.KeepsAnnotation(source, reference.Data)
                     || source.Resolve<DictionaryToken>(entry) is not { } annotation)
@@ -320,6 +337,65 @@ internal sealed class StructureCarrier : IAssemblyCarrier
             }
         }
     }
+
+    /// <summary>
+    /// Finds which part of a split page each of its marked contents lies in: the part holding the centre of what it
+    /// paints — its glyphs, paths and images — taken back to the page's user space, where the parts are.
+    /// </summary>
+    private void LocateContent(AssemblyContext context, Tree tree, SourcePage page)
+    {
+        Page read;
+        try
+        {
+            read = tree.Source.Document.GetPage(page.Number);
+        }
+        catch (Exception) when (!context.Cancellation.IsCancellationRequested)
+        {
+            return;   // a page whose content cannot be read keeps its content on its first part
+        }
+
+        var toUser = OperationContextHelper.GetInitialMatrix(UserSpaceUnit.Default, read.CropBox, read.Rotation, new NoOpLog()).Inverse();
+        var pending = new Stack<MarkedContentElement>(read.GetMarkedContents());
+        while (pending.Count > 0)
+        {
+            var element = pending.Pop();
+            foreach (var child in element.Children)
+            {
+                pending.Push(child);
+            }
+
+            if (element.MarkedContentIdentifier < 0 || contentParts.ContainsKey((page, element.MarkedContentIdentifier)))
+            {
+                continue;
+            }
+
+            var bounds = element.Letters.Select(letter => (PdfRectangle?)letter.GlyphRectangle)
+                .Concat(element.Paths.Select(path => path.GetBoundingRectangle()))
+                .Concat(element.Images.Select(image => (PdfRectangle?)image.Bounds))
+                .Where(rectangle => rectangle.HasValue)
+                .Select(rectangle => rectangle!.Value)
+                .ToList();
+            if (bounds.Count == 0)
+            {
+                continue;
+            }
+
+            var centre = toUser.Transform(new PdfPoint(
+                (bounds.Min(b => b.Left) + bounds.Max(b => b.Right)) / 2,
+                (bounds.Min(b => b.Bottom) + bounds.Max(b => b.Top)) / 2));
+            if (page.SlotAt(centre.X, centre.Y) is { } slot)
+            {
+                contentParts[(page, element.MarkedContentIdentifier)] = slot;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The part of a split page a marked content lies in; null where the page is not split or its place is unknown.
+    /// </summary>
+    private AssemblySlot? PartOf(AssemblySource source, IndirectReference? page, int mcid)
+        => page.HasValue && source.PageAt(page.Value) is { IsSplit: true } split
+           && contentParts.TryGetValue((split, mcid), out var slot) ? slot : null;
 
     private void Resources(AssemblyContext context, Tree tree, IToken? resources, HashSet<IndirectReference> visited, int depth)
     {
@@ -462,9 +538,19 @@ internal sealed class StructureCarrier : IAssemblyCarrier
     {
         var source = tree.Source;
 
-        if (token is NumericToken)
+        if (token is NumericToken mcid)
         {
-            return Content(context, source, token, page);
+            // Marked content on a later part of a split page is named with that part, as its own reference.
+            return PartOf(source, page, mcid.Int) is { } part && part != part.Page.Slot
+                ? new Kid(
+                    new DictionaryToken(new Dictionary<NameToken, IToken>
+                    {
+                        [NameToken.Type] = AssemblyNames.MarkedContentReference,
+                        [NameToken.Pg] = context.Rewrites.Placeholder(source, part.Reference),
+                        [NameToken.Mcid] = mcid,
+                    }),
+                    null, part.Index, [])
+                : Content(context, source, token, page);
         }
 
         if (token is not IndirectReferenceToken && token is not DictionaryToken || source.Resolve<DictionaryToken>(token) is not { } dictionary)
@@ -474,15 +560,26 @@ internal sealed class StructureCarrier : IAssemblyCarrier
 
         if (AssemblyTokens.IsName(dictionary, NameToken.Type, AssemblyNames.MarkedContentReference, source.Scanner))
         {
-            return Content(context, source, token, PageOf(dictionary) ?? page);
+            var contentPage = PageOf(dictionary) ?? page;
+            return AssemblyTokens.Integer(dictionary.TryGet(NameToken.Mcid, out var id) ? id : null, source.Scanner) is { } number
+                   && PartOf(source, contentPage, number) is { } part && part != part.Page.Slot
+                ? new Kid(dictionary.With(NameToken.Pg, context.Rewrites.Placeholder(source, part.Reference)), null, part.Index, [])
+                : Content(context, source, token, contentPage);
         }
 
         if (AssemblyTokens.IsName(dictionary, NameToken.Type, AssemblyNames.ObjectReference, source.Scanner))
         {
             var objectPage = PageOf(dictionary) ?? page;
-            var held = dictionary.TryGet(NameToken.Obj, out var obj) && obj is IndirectReferenceToken objectReference
-                       && context.Rewrites.IsDropped(source, objectReference.Data);
-            return held ? null : Content(context, source, token, objectPage);
+            var objectReference = dictionary.TryGet(NameToken.Obj, out var obj) ? obj as IndirectReferenceToken : null;
+            if (objectReference is not null && context.Rewrites.IsDropped(source, objectReference.Data))
+            {
+                return null;
+            }
+
+            // An object on a later part of a split page — an annotation — is named with that part.
+            return objectReference is not null && context.PlacedOn(source, objectReference.Data) is { } part && part != part.Page.Slot
+                ? new Kid(dictionary.With(NameToken.Pg, context.Rewrites.Placeholder(source, part.Reference)), null, part.Index, [])
+                : Content(context, source, token, objectPage);
         }
 
         var reference = token as IndirectReferenceToken;
@@ -672,6 +769,16 @@ internal sealed class StructureCarrier : IAssemblyCarrier
         foreach (var figure in figures.Values)
         {
             entries[figure.Key] = new ArrayToken([figure.Output]);
+        }
+
+        foreach (var part in partKeys)
+        {
+            var tree = treesBySource[part.Key.Source];
+            var source = tree.ParentTree.FirstOrDefault(entry => entry.Key == part.Value.SourceKey);
+            if (source.Value is not null && ParentTreeValue(context, tree.Source, source.Value) is { } value)
+            {
+                entries[part.Value.Key] = value;
+            }
         }
 
         var numbers = new List<IToken>(entries.Count * 2);

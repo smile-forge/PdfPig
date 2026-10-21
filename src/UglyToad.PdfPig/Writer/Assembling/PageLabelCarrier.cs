@@ -7,9 +7,9 @@ using Tokenization.Scanner;
 using Tokens;
 
 /// <summary>
-/// Page labels. Each page kept keeps the label it had — its style, prefix and number — and a page from a document
-/// without labels is labelled with its plain page number; the ranges are written again wherever one page's label does
-/// not run on from the one before.
+/// Page labels. Each page kept keeps the label it had — its style, prefix and number — while a page from a document
+/// without labels, and each part of a page split, is labelled with its plain page number; the ranges are written again
+/// wherever one page's label does not run on from the one before.
 /// </summary>
 internal sealed class PageLabelCarrier : IAssemblyCarrier
 {
@@ -37,7 +37,9 @@ internal sealed class PageLabelCarrier : IAssemblyCarrier
         Label? previous = null;
         foreach (var slot in context.Slots)
         {
-            var label = ranges.TryGetValue(slot.Source, out var sourceRanges)
+            // A split page's parts are pages its labels never named — in a booklet unfolded, not even next to each other —
+            // so each is labelled by where it now is, as a page from a document without labels is.
+            var label = !slot.Page.IsSplit && ranges.TryGetValue(slot.Source, out var sourceRanges)
                 ? LabelOf(slot, sourceRanges)
                 : new Label(NameToken.D, null, slot.Index + 1);
 

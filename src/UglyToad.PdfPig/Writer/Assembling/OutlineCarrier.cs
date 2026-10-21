@@ -111,7 +111,7 @@ internal sealed class OutlineCarrier : IAssemblyCarrier
             }
 
             item.Page = AssemblyTokens.Earliest(
-                item.LeftOut ? null : context.PositionOf(source, item.Target.Page),
+                item.LeftOut ? null : context.SlotOf(source, item.Target)?.Index,
                 item.Children.Aggregate((int?)null, (earliest, child) => AssemblyTokens.Earliest(earliest, child.Page)));
             kept.Add(item);
         }
@@ -155,12 +155,15 @@ internal sealed class OutlineCarrier : IAssemblyCarrier
             var explicitTarget = !source.IsPrimary && item.Target.IsNamed ? item.Target.Explicit : null;
             if (item.Dictionary.TryGet(NameToken.Dest, out var destination))
             {
-                dictionary[NameToken.Dest] = context.Copy(source, explicitTarget ?? destination);
+                dictionary[NameToken.Dest] = context.Copy(source, context.Retargeted(source, explicitTarget ?? destination, item.Target));
             }
             else if (item.Dictionary.TryGet(NameToken.A, out var action))
             {
-                dictionary[NameToken.A] = explicitTarget is not null && source.Resolve<DictionaryToken>(action) is { } goTo
-                    ? context.Copy(source, goTo.With(NameToken.D, explicitTarget))
+                var goTo = source.Resolve<DictionaryToken>(action);
+                var written = goTo is not null && goTo.TryGet(NameToken.D, out var d) ? d : null;
+                var target = written is null ? null : context.Retargeted(source, explicitTarget ?? written, item.Target);
+                dictionary[NameToken.A] = target is not null && !ReferenceEquals(target, written)
+                    ? context.Copy(source, goTo!.With(NameToken.D, target))
                     : context.Copy(source, action);
             }
         }

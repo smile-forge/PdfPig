@@ -78,7 +78,21 @@ internal sealed class CatalogCarrier : IAssemblyCarrier
         var target = resolved is ArrayToken
             ? context.Destinations.Resolve(primary, resolved)
             : context.Destinations.ResolveAction(primary, resolved);
-        if (!context.IsPageLeftOut(primary, target.Page))
+        if (context.IsPageLeftOut(primary, target.Page))
+        {
+            return;
+        }
+
+        if (resolved is ArrayToken)
+        {
+            catalog[NameToken.OpenAction] = context.Copy(primary, context.Retargeted(primary, resolved, target));
+        }
+        else if (resolved is DictionaryToken goTo && goTo.TryGet(NameToken.D, out var destination))
+        {
+            var retargeted = context.Retargeted(primary, destination, target);
+            catalog[NameToken.OpenAction] = context.Copy(primary, ReferenceEquals(retargeted, destination) ? action : goTo.With(NameToken.D, retargeted));
+        }
+        else
         {
             catalog[NameToken.OpenAction] = context.Copy(primary, action);
         }
