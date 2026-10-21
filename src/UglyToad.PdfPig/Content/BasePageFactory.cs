@@ -253,7 +253,12 @@
         /// <summary>
         /// Get the crop box.
         /// </summary>
-        protected CropBox GetCropBox(DictionaryToken dictionary, PageTreeMembers pageTreeMembers, MediaBox mediaBox)
+        /// <summary>
+        /// The page's crop box: its own, or the one it inherits, held to its media box. A factory that reads a page through
+        /// another window onto it — part of a page printed several to a sheet — returns that window, and the page is read as
+        /// though it were its crop box: its size, its initial matrix and what lies outside it all follow.
+        /// </summary>
+        protected virtual CropBox GetCropBox(DictionaryToken dictionary, PageTreeMembers pageTreeMembers, MediaBox mediaBox)
         {
             CropBox cropBox;
             if (dictionary.TryGet(NameToken.CropBox, out var cropBoxObject) &&
