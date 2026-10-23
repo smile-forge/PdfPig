@@ -10,4 +10,9 @@ public enum AssemblyRefusal
     /// another order or another document.
     /// </summary>
     XfaForm = 0,
+
+    /// <summary>
+    /// A page placed on a sheet has content that cannot be read, which drawing it there needs.
+    /// </summary>
+    UnreadableContent = 1,
 }

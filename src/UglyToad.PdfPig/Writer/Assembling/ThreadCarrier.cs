@@ -37,7 +37,7 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
                         && source.PageAt(pageReference.Data) is { IsKept: true } keptPage)
                     {
                         kept.Add(bead);
-                        parts.Add(keptPage.IsSplit ? Part(context, source, bead, beadDictionary, keptPage) : null);
+                        parts.Add(keptPage.IsSplit || keptPage.IsPlaced ? Part(context, source, bead, beadDictionary, keptPage) : null);
                     }
                     else
                     {
@@ -66,12 +66,20 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
                     var next = outputs[(i + 1) % outputs.Count];
                     var previous = outputs[(i - 1 + outputs.Count) % outputs.Count];
                     var part = parts[i]?.Reference;
+
+                    // A bead on a page placed on a sheet moves with it.
+                    var moved = parts[i]?.ToSheet is { } toSheet
+                                && source.Resolve<DictionaryToken>(new IndirectReferenceToken(kept[i])) is { } placedBead
+                                && SheetGeometry.Rectangle(source, placedBead.TryGet(NameToken.R, out var r) ? r : null) is { } rectangle
+                        ? SheetGeometry.Rectangle(SheetGeometry.Bounds(toSheet, rectangle))
+                        : null;
                     context.Rewrites.After(
                         source,
                         kept[i],
                         copied =>
                         {
                             var linked = copied.With(NameToken.N, next).With(NameToken.V, previous).With(NameToken.T, threadOutput);
+                            linked = moved is null ? linked : linked.With(NameToken.R, moved);
                             return part is null ? linked : linked.With(NameToken.P, part);
                         });
                 }
@@ -98,7 +106,7 @@ internal sealed class ThreadCarrier : IAssemblyCarrier
     }
 
     /// <summary>
-    /// The part of a split page a bead lies in — the one holding its rectangle's centre — put on that part.
+    /// The part of a split or placed page a bead lies in — the one holding its rectangle's centre — put on that part.
     /// </summary>
     private static AssemblySlot? Part(AssemblyContext context, AssemblySource source, IndirectReference bead, DictionaryToken dictionary, SourcePage page)
     {

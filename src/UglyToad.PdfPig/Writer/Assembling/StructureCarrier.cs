@@ -35,14 +35,14 @@ internal sealed class StructureCarrier : IAssemblyCarrier
     private readonly AnnotationCarrier annotations;
     private readonly List<Tree> trees = new();
     private readonly Dictionary<AssemblySource, Tree> treesBySource = new();
-    private readonly Dictionary<AssemblySlot, Figure> figures = new();
+    private readonly Dictionary<IndirectReference, Figure> figures = new();
     private readonly Dictionary<string, IToken> roles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (AssemblySource Source, IToken Value)> classes = new(StringComparer.Ordinal);
     private readonly List<KeyValuePair<IDataToken<string>, (AssemblySource Source, IToken Element)>> ids = new();
     private readonly HashSet<string> idNames = new(StringComparer.Ordinal);
     private readonly List<Placed> rootKids = new();
     private readonly List<Placed> placedDirectly = new();
-    private readonly Dictionary<AssemblySlot, (int Key, int SourceKey)> partKeys = new();
+    private readonly Dictionary<IndirectReference, (int Key, int SourceKey, Tree Tree)> holderKeys = new();
     private readonly Dictionary<(SourcePage Page, int Mcid), AssemblySlot> contentParts = new();
     private IndirectReferenceToken? root;
     private int nextKey;
@@ -103,18 +103,21 @@ internal sealed class StructureCarrier : IAssemblyCarrier
             Speak(context, tree);
         }
 
+        var keyed = new HashSet<SourcePage>();
         foreach (var slot in context.Slots)
         {
-            if (slot.Tag is not null && !treesBySource.ContainsKey(slot.Source))
+            if (slot.Tag is not null && !treesBySource.ContainsKey(slot.Source) && !figures.ContainsKey(slot.Holder))
             {
-                figures[slot] = new Figure(slot, context.Writer.ReserveObjectNumber(), nextKey++);
+                figures[slot.Holder] = new Figure(slot, context.Writer.ReserveObjectNumber(), nextKey++);
             }
 
-            // A split page's later parts draw the same content, and need keys of their own for it.
-            if (treesBySource.ContainsKey(slot.Source) && slot.Page.IsSplit && slot != slot.Page.Slot
+            // Each place a page's content is drawn from names its marked content with a key of its own — the page
+            // written as itself, each further part written as a page, the one form every placement of it on a sheet
+            // draws — the first keeping the page's.
+            if (treesBySource.TryGetValue(slot.Source, out var tree) && !holderKeys.ContainsKey(slot.Holder)
                 && AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, slot.Source.Scanner) is { } sourceKey)
             {
-                partKeys[slot] = (nextKey++, sourceKey);
+                holderKeys[slot.Holder] = (keyed.Add(slot.Page) ? sourceKey + tree.Offset : nextKey++, sourceKey, tree);
             }
         }
 
@@ -132,21 +135,17 @@ internal sealed class StructureCarrier : IAssemblyCarrier
             return;
         }
 
-        if (treesBySource.TryGetValue(slot.Source, out var tree))
+        if (treesBySource.ContainsKey(slot.Source))
         {
-            if (partKeys.TryGetValue(slot, out var part))
+            if (holderKeys.TryGetValue(slot.Holder, out var held))
             {
-                page[NameToken.StructParents] = new NumericToken(part.Key);
-            }
-            else if (AssemblyTokens.Integer(slot.Page.Dictionary.TryGet(NameToken.StructParents, out var key) ? key : null, slot.Source.Scanner) is { } sourceKey)
-            {
-                page[NameToken.StructParents] = new NumericToken(sourceKey + tree.Offset);
+                page[NameToken.StructParents] = new NumericToken(held.Key);
             }
 
             return;
         }
 
-        if (!figures.TryGetValue(slot, out var figure))
+        if (!figures.TryGetValue(slot.Holder, out var figure))
         {
             return;
         }
@@ -160,6 +159,27 @@ internal sealed class StructureCarrier : IAssemblyCarrier
         contents.Add(ContentStream(context, "\nEMC\n"));
         page[NameToken.Contents] = new ArrayToken(contents);
         page[NameToken.StructParents] = new NumericToken(figure.Key);
+    }
+
+    /// <summary>
+    /// How the form a placed page is drawn from is named in the structure: its key in the parent tree, and for an untagged
+    /// page given a tag, what its content is wrapped in to be the one element its figure is.
+    /// </summary>
+    public FormMarking Form(AssemblyContext context, AssemblySlot slot)
+    {
+        if (root is null)
+        {
+            return default;
+        }
+
+        if (treesBySource.ContainsKey(slot.Source))
+        {
+            return holderKeys.TryGetValue(slot.Holder, out var held) ? new FormMarking(held.Key, null, null) : default;
+        }
+
+        return figures.TryGetValue(slot.Holder, out var figure)
+            ? new FormMarking(figure.Key, "/" + Escaped(figure.Slot.Tag!.Role) + " <</MCID 0>> BDC\n", "\nEMC\n")
+            : default;
     }
 
     public void Complete(AssemblyContext context, IDictionary<NameToken, IToken> catalog)
@@ -177,7 +197,15 @@ internal sealed class StructureCarrier : IAssemblyCarrier
                 [NameToken.S] = NameToken.Create(figure.Slot.Tag!.Role),
                 [NameToken.P] = figure.Parent!,
                 [NameToken.Pg] = figure.Slot.Reference,
-                [NameToken.K] = NumericToken.Zero,
+                [NameToken.K] = figure.Slot.Form is { } form
+                    ? new DictionaryToken(new Dictionary<NameToken, IToken>
+                    {
+                        [NameToken.Type] = AssemblyNames.MarkedContentReference,
+                        [NameToken.Pg] = figure.Slot.Reference,
+                        [AssemblyNames.Stm] = form,
+                        [NameToken.Mcid] = NumericToken.Zero,
+                    })
+                    : NumericToken.Zero,
             };
 
             if (figure.Slot.Tag.AlternateDescription is { } alternate)
@@ -391,11 +419,23 @@ internal sealed class StructureCarrier : IAssemblyCarrier
     }
 
     /// <summary>
-    /// The part of a split page a marked content lies in; null where the page is not split or its place is unknown.
+    /// Where a marked content of a page is drawn from: the part of a split page it lies in, else the first place the page
+    /// goes; null where the page is not kept.
     /// </summary>
-    private AssemblySlot? PartOf(AssemblySource source, IndirectReference? page, int mcid)
-        => page.HasValue && source.PageAt(page.Value) is { IsSplit: true } split
-           && contentParts.TryGetValue((split, mcid), out var slot) ? slot : null;
+    private AssemblySlot? HolderOf(AssemblySource source, IndirectReference? page, int mcid)
+        => page.HasValue && source.PageAt(page.Value) is { IsKept: true } kept
+            ? kept.IsSplit && contentParts.TryGetValue((kept, mcid), out var slot) ? slot : kept.Slot
+            : null;
+
+    /// <summary>
+    /// A marked-content reference named with where its content is drawn from: the page it is on, and the form a placed
+    /// page is drawn from.
+    /// </summary>
+    private static DictionaryToken Named(AssemblyContext context, AssemblySource source, AssemblySlot holder, DictionaryToken reference)
+    {
+        var named = reference.With(NameToken.Pg, context.Rewrites.Placeholder(source, holder.Reference));
+        return holder.Form is { } form ? named.With(AssemblyNames.Stm, context.Rewrites.Placeholder(source, form)) : named;
+    }
 
     private void Resources(AssemblyContext context, Tree tree, IToken? resources, HashSet<IndirectReference> visited, int depth)
     {
@@ -540,16 +580,16 @@ internal sealed class StructureCarrier : IAssemblyCarrier
 
         if (token is NumericToken mcid)
         {
-            // Marked content on a later part of a split page is named with that part, as its own reference.
-            return PartOf(source, page, mcid.Int) is { } part && part != part.Page.Slot
+            // Marked content on a later part of a split page is named with that part, and on a page placed on a sheet
+            // with the sheet and the form it is drawn from, as a reference of its own.
+            return HolderOf(source, page, mcid.Int) is { } holder && (holder.IsPlaced || holder != holder.Page.Slot)
                 ? new Kid(
-                    new DictionaryToken(new Dictionary<NameToken, IToken>
+                    Named(context, source, holder, new DictionaryToken(new Dictionary<NameToken, IToken>
                     {
                         [NameToken.Type] = AssemblyNames.MarkedContentReference,
-                        [NameToken.Pg] = context.Rewrites.Placeholder(source, part.Reference),
                         [NameToken.Mcid] = mcid,
-                    }),
-                    null, part.Index, [])
+                    })),
+                    null, holder.Index, [])
                 : Content(context, source, token, page);
         }
 
@@ -560,10 +600,12 @@ internal sealed class StructureCarrier : IAssemblyCarrier
 
         if (AssemblyTokens.IsName(dictionary, NameToken.Type, AssemblyNames.MarkedContentReference, source.Scanner))
         {
+            // One naming content in a form the page itself draws keeps its form; only its page moves, with the page.
             var contentPage = PageOf(dictionary) ?? page;
-            return AssemblyTokens.Integer(dictionary.TryGet(NameToken.Mcid, out var id) ? id : null, source.Scanner) is { } number
-                   && PartOf(source, contentPage, number) is { } part && part != part.Page.Slot
-                ? new Kid(dictionary.With(NameToken.Pg, context.Rewrites.Placeholder(source, part.Reference)), null, part.Index, [])
+            return !dictionary.ContainsKey(AssemblyNames.Stm)
+                   && AssemblyTokens.Integer(dictionary.TryGet(NameToken.Mcid, out var id) ? id : null, source.Scanner) is { } number
+                   && HolderOf(source, contentPage, number) is { } holder && (holder.IsPlaced || holder != holder.Page.Slot)
+                ? new Kid(Named(context, source, holder, dictionary), null, holder.Index, [])
                 : Content(context, source, token, contentPage);
         }
 
@@ -771,13 +813,17 @@ internal sealed class StructureCarrier : IAssemblyCarrier
             entries[figure.Key] = new ArrayToken([figure.Output]);
         }
 
-        foreach (var part in partKeys)
+        foreach (var held in holderKeys.Values)
         {
-            var tree = treesBySource[part.Key.Source];
-            var source = tree.ParentTree.FirstOrDefault(entry => entry.Key == part.Value.SourceKey);
-            if (source.Value is not null && ParentTreeValue(context, tree.Source, source.Value) is { } value)
+            if (held.Key == held.SourceKey + held.Tree.Offset)
             {
-                entries[part.Value.Key] = value;
+                continue;
+            }
+
+            var source = held.Tree.ParentTree.FirstOrDefault(entry => entry.Key == held.SourceKey);
+            if (source.Value is not null && ParentTreeValue(context, held.Tree.Source, source.Value) is { } value)
+            {
+                entries[held.Key] = value;
             }
         }
 
@@ -986,4 +1032,10 @@ internal sealed class StructureCarrier : IAssemblyCarrier
 
         public IndirectReferenceToken? Parent { get; set; }
     }
+
+    /// <summary>
+    /// How a form a placed page is drawn from is named in the structure: its key in the parent tree, if any, and what its
+    /// content is wrapped in, if anything.
+    /// </summary>
+    public readonly record struct FormMarking(int? Key, string? Before, string? After);
 }

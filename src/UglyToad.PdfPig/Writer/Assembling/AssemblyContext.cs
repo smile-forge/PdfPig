@@ -17,11 +17,13 @@ internal sealed class AssemblyContext
     public AssemblyContext(
         IPdfStreamWriter writer,
         IReadOnlyList<AssemblySource> sources,
+        IReadOnlyList<AssemblySheet> sheets,
         IReadOnlyList<AssemblySlot> slots,
         CancellationToken cancellation)
     {
         Writer = writer;
         Sources = sources;
+        Sheets = sheets;
         Slots = slots;
         Cancellation = cancellation;
         NullReference = writer.WriteToken(NullToken.Instance);
@@ -40,6 +42,12 @@ internal sealed class AssemblyContext
 
     /// <summary>
     /// The pages of the output, in order.
+    /// </summary>
+    public IReadOnlyList<AssemblySheet> Sheets { get; }
+
+    /// <summary>
+    /// Every source page, or part of one, the output shows, in order: one for each page written as itself, one for
+    /// each page placed on a sheet.
     /// </summary>
     public IReadOnlyList<AssemblySlot> Slots { get; }
 
@@ -115,23 +123,34 @@ internal sealed class AssemblyContext
     }
 
     /// <summary>
-    /// <paramref name="destination"/> as the source writes it, pointed at the part of a split page its point lies in: the
-    /// page in its explicit destination becomes that part — and a named one becomes explicit, since a name can only
-    /// stand for one of the parts. Any other destination comes back as it is.
+    /// <paramref name="destination"/> as the source writes it, pointed at where its page now is when that page is split
+    /// or placed on a sheet: the page in its explicit destination becomes the part its point lies in — and, on a sheet,
+    /// its coordinates are moved with the page — while a named one becomes explicit, since a name can only stand for
+    /// one of the places. Any other destination comes back as it is.
     /// </summary>
     public IToken Retargeted(AssemblySource source, IToken destination, ResolvedDestination target)
     {
         if (target.Page is not { } page
-            || source.PageAt(page) is not { IsSplit: true }
+            || source.PageAt(page) is not { IsKept: true } kept
+            || !kept.IsSplit && !kept.IsPlaced
             || target.Explicit is not { } array
             || SlotOf(source, target) is not { } slot)
         {
             return destination;
         }
 
-        var items = array.Data.ToList();
-        items[0] = Rewrites.Placeholder(source, slot.Reference);
-        var retargeted = new ArrayToken(items);
+        var onto = Rewrites.Placeholder(source, slot.Reference);
+        ArrayToken retargeted;
+        if (slot.ToSheet is { } toSheet)
+        {
+            retargeted = SheetGeometry.Destination(source, array, onto, slot.Shown, toSheet);
+        }
+        else
+        {
+            var items = array.Data.ToList();
+            items[0] = onto;
+            retargeted = new ArrayToken(items);
+        }
 
         return source.Resolve<DictionaryToken>(destination) is { } holder && holder.ContainsKey(NameToken.D)
             ? holder.With(NameToken.D, retargeted)
