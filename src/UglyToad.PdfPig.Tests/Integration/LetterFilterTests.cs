@@ -50,5 +50,21 @@
                 Assert.True(filteredWords[indexOfCheckedWordInFilteredWords].Text == "ACOGUT");
             }
         }
+
+        [Fact]
+        public void LettersCanBeClipped_WithoutClippingPaths()
+        {
+            var one = IntegrationHelpers.GetDocumentPath("ClipPathLetterFilter-Test2.pdf");
+
+            using (var clipped = PdfDocument.Open(one, new ParsingOptions { ClipPaths = true }))
+            using (var lettersOnly = PdfDocument.Open(one, new ParsingOptions { ClipLetters = true }))
+            using (var neither = PdfDocument.Open(one, new ParsingOptions()))
+            {
+                var page = lettersOnly.GetPage(1);
+
+                Assert.Equal(clipped.GetPage(1).Letters.Select(l => l.Value), page.Letters.Select(l => l.Value));
+                Assert.Equal(neither.GetPage(1).Paths.Count, page.Paths.Count);
+            }
+        }
     }
 }

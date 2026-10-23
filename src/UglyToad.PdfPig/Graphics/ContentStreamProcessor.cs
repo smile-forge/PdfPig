@@ -171,7 +171,7 @@ namespace UglyToad.PdfPig.Graphics
             var transformedGlyphBounds = PerformantRectangleTransformer
                 .Transform(renderingMatrix, textMatrix, transformationMatrix, characterBoundingBox.GlyphBounds);
             
-            if (ParsingOptions.ClipPaths)
+            if (ParsingOptions.ClipPaths || ParsingOptions.ClipLetters)
             {
                 var currentClipping = currentState.CurrentClippingPath;
                 if (currentClipping?.IntersectsWith(transformedGlyphBounds) == false)
@@ -509,7 +509,8 @@ namespace UglyToad.PdfPig.Graphics
             AddCurrentSubpath();
             CurrentPath.SetClipping(clippingRule);
 
-            if (ParsingOptions.ClipPaths)
+            // Letters are clipped by the path as it now stands, so it is followed whenever either is clipped.
+            if (ParsingOptions.ClipPaths || ParsingOptions.ClipLetters)
             {
                 var graphicsState = GetCurrentState();
                 var currentClipping = graphicsState.CurrentClippingPath!;
