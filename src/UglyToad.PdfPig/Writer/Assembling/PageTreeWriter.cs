@@ -1,14 +1,19 @@
 namespace UglyToad.PdfPig.Writer.Assembling;
 
+using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Text;
 using Core;
 using Geometry;
 using Tokens;
 
 /// <summary>
 /// Writes each planned page at its reserved reference, with what it inherited from its source page tree made its own,
-/// under a balanced page tree of its own.
+/// under a balanced page tree of its own. A sheet is written as a page of its own size that draws each page placed on
+/// it from a form XObject of that page's content, clipped to the part of it shown.
 /// </summary>
 internal sealed class PageTreeWriter
 {
@@ -19,6 +24,7 @@ internal sealed class PageTreeWriter
     private readonly AssemblyContext context;
     private readonly AnnotationCarrier annotations;
     private readonly StructureCarrier structure;
+    private readonly HashSet<IndirectReference> forms = new();
 
     public PageTreeWriter(AssemblyContext context, AnnotationCarrier annotations, StructureCarrier structure)
     {
@@ -33,14 +39,22 @@ internal sealed class PageTreeWriter
     public IndirectReferenceToken Write()
     {
         var level = new List<Node>();
-        for (var start = 0; start < context.Slots.Count; start += KidsPerNode)
+        for (var start = 0; start < context.Sheets.Count; start += KidsPerNode)
         {
             var leaf = new Node(context.Writer.ReserveObjectNumber());
-            foreach (var slot in context.Slots.Skip(start).Take(KidsPerNode))
+            foreach (var sheet in context.Sheets.Skip(start).Take(KidsPerNode))
             {
                 context.ThrowIfCancelled();
-                WritePage(slot, leaf.Reference);
-                leaf.Kids.Add(slot.Reference);
+                if (sheet.IsImposed)
+                {
+                    WriteSheet(sheet, leaf.Reference);
+                }
+                else
+                {
+                    WritePage(sheet.Slots[0], leaf.Reference);
+                }
+
+                leaf.Kids.Add(sheet.Reference);
                 leaf.Count++;
             }
 
@@ -115,10 +129,7 @@ internal sealed class PageTreeWriter
 
             if (name.Equals(NameToken.B) && page.IsSplit)
             {
-                var beads = (source.Resolve<ArrayToken>(entry.Value)?.Data ?? [])
-                    .Where(bead => context.IsOn(slot, bead))
-                    .Select(bead => context.Copy(source, bead))
-                    .ToList();
+                var beads = Beads(slot);
                 if (beads.Count > 0)
                 {
                     dictionary[NameToken.B] = new ArrayToken(beads);
@@ -132,18 +143,9 @@ internal sealed class PageTreeWriter
 
         foreach (var name in Inheritable)
         {
-            if (dictionary.ContainsKey(name))
+            if (!dictionary.ContainsKey(name) && page.Inherited(name) is { } inherited)
             {
-                continue;
-            }
-
-            for (var i = page.Ancestors.Count - 1; i >= 0; i--)
-            {
-                if (page.Ancestors[i].TryGet(name, out var inherited))
-                {
-                    dictionary[name] = context.Copy(source, inherited);
-                    break;
-                }
+                dictionary[name] = context.Copy(source, inherited);
             }
         }
 
@@ -163,6 +165,209 @@ internal sealed class PageTreeWriter
         dictionary[NameToken.Parent] = parent;
         context.Writer.WriteToken(new DictionaryToken(dictionary), slot.Reference);
     }
+
+    /// <summary>
+    /// Writes a sheet: a page of its own size whose content draws each page placed on it — the form of that page's
+    /// content, put where the placement takes it and clipped to the part of it shown — and which holds what lies on each
+    /// placement: its annotations and article beads.
+    /// </summary>
+    private void WriteSheet(AssemblySheet sheet, IndirectReferenceToken parent)
+    {
+        var xobjects = new Dictionary<NameToken, IToken>();
+        var names = new Dictionary<IndirectReference, NameToken>();
+        var content = new StringBuilder();
+        var annotationsOnSheet = new List<IToken>();
+        var beads = new List<IToken>();
+        IToken? tabs = null;
+        IToken? group = null;
+
+        foreach (var slot in sheet.Slots)
+        {
+            var form = slot.Form!;
+            var toSheet = slot.ToSheet!.Value;
+            if (!names.TryGetValue(form.Data, out var name))
+            {
+                name = NameToken.Create("P" + names.Count.ToString(CultureInfo.InvariantCulture));
+                names[form.Data] = name;
+                xobjects[name] = form;
+            }
+
+            if (forms.Add(form.Data))
+            {
+                WriteForm(slot);
+            }
+
+            var clip = SheetGeometry.Bounds(toSheet, slot.Shown);
+            content.Append("q ")
+                .Append(Number(clip.Left)).Append(' ').Append(Number(clip.Bottom)).Append(' ')
+                .Append(Number(clip.Width)).Append(' ').Append(Number(clip.Height)).Append(" re W n ")
+                .Append(Number(toSheet.A)).Append(' ').Append(Number(toSheet.B)).Append(' ')
+                .Append(Number(toSheet.C)).Append(' ').Append(Number(toSheet.D)).Append(' ')
+                .Append(Number(toSheet.E)).Append(' ').Append(Number(toSheet.F)).Append(" cm /")
+                .Append(name.Data).Append(" Do Q\n");
+
+            annotationsOnSheet.AddRange(annotations.Written(context, slot));
+            beads.AddRange(Beads(slot));
+
+            if (tabs is null && slot.Page.Dictionary.TryGet(AssemblyNames.Tabs, out var pageTabs))
+            {
+                tabs = context.Copy(slot.Source, pageTabs);
+            }
+
+            if (group is null && slot.Page.Dictionary.TryGet(NameToken.Group, out var pageGroup))
+            {
+                group = context.Copy(slot.Source, pageGroup);
+            }
+        }
+
+        var resources = new Dictionary<NameToken, IToken>();
+        if (xobjects.Count > 0)
+        {
+            resources[NameToken.Xobject] = new DictionaryToken(xobjects);
+        }
+
+        var dictionary = new Dictionary<NameToken, IToken>
+        {
+            [NameToken.Type] = NameToken.Page,
+            [NameToken.Parent] = parent,
+            [NameToken.MediaBox] = SheetGeometry.Rectangle(sheet.Bounds!.Value),
+            [NameToken.Resources] = new DictionaryToken(resources),
+            [NameToken.Contents] = context.Writer.WriteToken(DataCompressor.CompressToStream(Encoding.ASCII.GetBytes(content.ToString()))),
+        };
+
+        if (annotationsOnSheet.Count > 0)
+        {
+            dictionary[NameToken.Annots] = new ArrayToken(annotationsOnSheet);
+        }
+
+        if (beads.Count > 0)
+        {
+            dictionary[NameToken.B] = new ArrayToken(beads);
+        }
+
+        if (tabs is not null)
+        {
+            dictionary[AssemblyNames.Tabs] = tabs;
+        }
+
+        if (group is not null)
+        {
+            dictionary[NameToken.Group] = group;
+        }
+
+        context.Writer.WriteToken(new DictionaryToken(dictionary), sheet.Reference);
+    }
+
+    /// <summary>
+    /// Writes the form XObject a placed page is drawn from: its content, in its own user space over its media box, with
+    /// the resources it inherits made its own and its transparency group — written once however often it is placed.
+    /// A page's one content stream is carried as it is; several are read and joined, as a form holds only one.
+    /// </summary>
+    private void WriteForm(AssemblySlot slot)
+    {
+        var source = slot.Source;
+        var page = slot.Page;
+        var media = SheetGeometry.Rectangle(source, page.Inherited(NameToken.MediaBox)) ?? new PdfRectangle(0, 0, 612, 792);
+        var dictionary = new Dictionary<NameToken, IToken>
+        {
+            [NameToken.Type] = NameToken.Xobject,
+            [NameToken.Subtype] = NameToken.Form,
+            [AssemblyNames.FormType] = new NumericToken(1),
+            [NameToken.Bbox] = SheetGeometry.Rectangle(media),
+            [NameToken.Resources] = page.Inherited(NameToken.Resources) is { } resources
+                ? context.Copy(source, resources)
+                : new DictionaryToken(new Dictionary<NameToken, IToken>()),
+        };
+
+        if (page.Dictionary.TryGet(NameToken.Group, out var group))
+        {
+            dictionary[NameToken.Group] = context.Copy(source, group);
+        }
+
+        var marking = structure.Form(context, slot);
+        if (marking.Key is { } key)
+        {
+            dictionary[NameToken.StructParents] = new NumericToken(key);
+        }
+
+        var items = AssemblyTokens.Items(page.Dictionary.TryGet(NameToken.Contents, out var contents) ? contents : null, source.Scanner);
+        if (items.Count == 1 && marking.Before is null && source.Resolve<StreamToken>(items[0]) is { } only)
+        {
+            var copied = (StreamToken)context.Copy(source, only);
+            foreach (var entry in copied.StreamDictionary.Data)
+            {
+                var name = NameToken.Create(entry.Key);
+                if (Carried.Contains(name))
+                {
+                    dictionary[name] = entry.Value;
+                }
+            }
+
+            context.Writer.WriteToken(new StreamToken(new DictionaryToken(dictionary), copied.Data), slot.Form!);
+            return;
+        }
+
+        using var joined = new MemoryStream();
+        void Append(string text)
+        {
+            var bytes = Encoding.ASCII.GetBytes(text);
+            joined.Write(bytes, 0, bytes.Length);
+        }
+
+        if (marking.Before is not null)
+        {
+            Append(marking.Before);
+        }
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (source.Resolve<StreamToken>(items[i]) is not { } stream)
+            {
+                continue;
+            }
+
+            Memory<byte> decoded;
+            try
+            {
+                decoded = stream.Decode(source.Document.Structure.FilterProvider, source.Scanner);
+            }
+            catch (Exception ex) when (!context.Cancellation.IsCancellationRequested)
+            {
+                throw new AssemblyRefusedException(
+                    source.Document,
+                    AssemblyRefusal.UnreadableContent,
+                    $"Page {page.Number}'s content cannot be read to draw it on a sheet: {ex.Message}");
+            }
+
+            if (i > 0)
+            {
+                Append("\n");
+            }
+
+            joined.Write(decoded.ToArray(), 0, decoded.Length);
+        }
+
+        if (marking.After is not null)
+        {
+            Append(marking.After);
+        }
+
+        var compressed = DataCompressor.CompressBytes(joined.ToArray());
+        dictionary[NameToken.Length] = new NumericToken(compressed.Length);
+        dictionary[NameToken.Filter] = NameToken.FlateDecode;
+        context.Writer.WriteToken(new StreamToken(new DictionaryToken(dictionary), compressed), slot.Form!);
+    }
+
+    /// <summary>
+    /// The article beads the page shows where it is put: those lying in its part, when it is shown in more than one.
+    /// </summary>
+    private List<IToken> Beads(AssemblySlot slot)
+        => (slot.Source.Resolve<ArrayToken>(slot.Page.Dictionary.TryGet(NameToken.B, out var beads) ? beads : null)?.Data ?? [])
+            .Where(bead => context.IsOn(slot, bead))
+            .Select(bead => context.Copy(slot.Source, bead))
+            .ToList();
+
+    private static string Number(double value) => value.ToString("0.##########", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Shows only <paramref name="region"/> of a page: it becomes the crop box, and the trim, bleed and art boxes are held
@@ -209,6 +414,9 @@ internal sealed class PageTreeWriter
     ]);
 
     private static readonly NameToken[] Bounded = [NameToken.TrimBox, NameToken.BleedBox, NameToken.ArtBox];
+
+    /// <summary>What a content stream carried as a form's own says about its bytes.</summary>
+    private static readonly NameToken[] Carried = [NameToken.Length, NameToken.Filter, NameToken.DecodeParms, NameToken.Dl];
 
     private sealed class Node
     {

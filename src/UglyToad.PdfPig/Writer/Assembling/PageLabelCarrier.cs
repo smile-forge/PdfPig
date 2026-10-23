@@ -35,17 +35,19 @@ internal sealed class PageLabelCarrier : IAssemblyCarrier
 
         var numbers = new List<IToken>();
         Label? previous = null;
-        foreach (var slot in context.Slots)
+        foreach (var sheet in context.Sheets)
         {
             // A split page's parts are pages its labels never named — in a booklet unfolded, not even next to each other —
-            // so each is labelled by where it now is, as a page from a document without labels is.
-            var label = !slot.Page.IsSplit && ranges.TryGetValue(slot.Source, out var sourceRanges)
+            // and a sheet is a page of its own, so each is labelled by where it now is, as a page from a document
+            // without labels is.
+            var slot = sheet.IsImposed ? null : sheet.Slots[0];
+            var label = slot is { Page.IsSplit: false } && ranges.TryGetValue(slot.Source, out var sourceRanges)
                 ? LabelOf(slot, sourceRanges)
-                : new Label(NameToken.D, null, slot.Index + 1);
+                : new Label(NameToken.D, null, sheet.Index + 1);
 
             if (previous is null || !label.RunsOn(previous))
             {
-                numbers.Add(new NumericToken(slot.Index));
+                numbers.Add(new NumericToken(sheet.Index));
                 numbers.Add(label.Range());
             }
 

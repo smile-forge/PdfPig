@@ -52,6 +52,24 @@ internal sealed class RewrittenObjects
     }
 
     /// <summary>
+    /// A copy of the object, written at a reference of its own with <paramref name="edit"/> made in its source's terms, for
+    /// a place that needs it changed while every other keeps the original — an annotation on a page placed twice, an
+    /// appearance turned for one placement. Every reference to the original still lands on the original.
+    /// </summary>
+    public IndirectReferenceToken Detached(AssemblySource source, IndirectReference reference, Func<DictionaryToken, DictionaryToken> edit)
+    {
+        if (written)
+        {
+            throw new InvalidOperationException("Objects are copied before the assembly writes them.");
+        }
+
+        var rewrite = new Rewrite(source, reference, context.Writer.ReserveObjectNumber());
+        rewrite.Before.Add(edit);
+        claimed.Add(rewrite);
+        return rewrite.Output;
+    }
+
+    /// <summary>
     /// Edits an object as its owner lists it: an indirect one through its claim, so the token stays its reference;
     /// a direct dictionary in place, so the token is the edited dictionary.
     /// </summary>

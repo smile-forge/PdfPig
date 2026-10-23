@@ -13,6 +13,10 @@ internal static class AssemblyNames
 
     public static readonly NameToken ClassMap = NameToken.Create("ClassMap");
 
+    public static readonly NameToken FormType = NameToken.Create("FormType");
+
+    public static readonly NameToken InkList = NameToken.Create("InkList");
+
     public static readonly NameToken Configs = NameToken.Create("Configs");
 
     public static readonly NameToken InReplyTo = NameToken.Create("IRT");
@@ -33,11 +37,17 @@ internal static class AssemblyNames
 
     public static readonly NameToken PronunciationLexicon = NameToken.Create("PronunciationLexicon");
 
+    public static readonly NameToken QuadPoints = NameToken.Create("QuadPoints");
+
     public static readonly NameToken RadioButtonGroups = NameToken.Create("RBGroups");
 
     public static readonly NameToken StructureElement = NameToken.Create("StructElem");
 
+    public static readonly NameToken Stm = NameToken.Create("Stm");
+
     public static readonly NameToken Suspects = NameToken.Create("Suspects");
+
+    public static readonly NameToken Tabs = NameToken.Create("Tabs");
 
     public static readonly NameToken UserProperties = NameToken.Create("UserProperties");
 }

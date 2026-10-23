@@ -3,6 +3,7 @@ namespace UglyToad.PdfPig.Writer;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Assembling;
 
@@ -10,7 +11,9 @@ using Assembling;
 /// Writes a document made of pages taken from open documents, in any order, together with everything those documents
 /// hold beyond their pages: the outline, the interactive form, page labels, named destinations and the other name
 /// trees, the logical structure of a tagged document, article threads and optional content, each re-pointed to where
-/// its pages now are. What lived only on a page that is left out goes with that page; nothing else is dropped.
+/// its pages now are. What lived only on a page that is left out goes with that page; nothing else is dropped. Pages
+/// may also be placed on sheets — several to a sheet, or one scaled to another size — and what lies on them moves
+/// with them.
 /// </summary>
 public static class PdfDocumentAssembler
 {
@@ -33,16 +36,58 @@ public static class PdfDocumentAssembler
             throw new ArgumentNullException(nameof(pages));
         }
 
-        if (output is null)
-        {
-            throw new ArgumentNullException(nameof(output));
-        }
-
         if (pages.Count == 0)
         {
             throw new ArgumentException("A document needs at least one page.", nameof(pages));
         }
 
-        new DocumentAssembly(pages, output, options ?? new AssemblyOptions(), cancellationToken).Write();
+        Assemble(pages.Select(AssembledSheet.Of).ToList(), output, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes <paramref name="sheets"/>, in order, as a new document to <paramref name="output"/>: each a source page
+    /// written as itself, or a sheet with source pages placed on it.
+    /// </summary>
+    /// <param name="sheets">
+    /// The pages of the new document. A page of a source document may be written as itself only once, but may be
+    /// placed on sheets as often as wanted.
+    /// </param>
+    /// <param name="output">A writable stream, left open. An assembly that is cancelled or fails leaves it incomplete.</param>
+    /// <param name="options">
+    /// The document the catalog and the document information come from, and the version written. A document of blank
+    /// sheets only needs its primary document given.
+    /// </param>
+    /// <param name="cancellationToken">Checked between pages and between the parts of the documents carried.</param>
+    /// <exception cref="AssemblyRefusedException">
+    /// A source document cannot be assembled from, such as one with an XFA form, or a page placed on a sheet has content
+    /// that cannot be read to draw it there.
+    /// </exception>
+    public static void Assemble(
+        IReadOnlyList<AssembledSheet> sheets,
+        Stream output,
+        AssemblyOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (sheets is null)
+        {
+            throw new ArgumentNullException(nameof(sheets));
+        }
+
+        if (output is null)
+        {
+            throw new ArgumentNullException(nameof(output));
+        }
+
+        if (sheets.Count == 0)
+        {
+            throw new ArgumentException("A document needs at least one page.", nameof(sheets));
+        }
+
+        if (sheets.Any(sheet => sheet is null))
+        {
+            throw new ArgumentException("Every page of a document is a sheet.", nameof(sheets));
+        }
+
+        new DocumentAssembly(sheets, output, options ?? new AssemblyOptions(), cancellationToken).Write();
     }
 }
