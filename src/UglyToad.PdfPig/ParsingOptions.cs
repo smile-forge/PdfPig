@@ -26,6 +26,14 @@
         public bool ClipPaths { get; set; } = false;
 
         /// <summary>
+        /// Should the parser leave out of a page's letters those its clipping path leaves out — outside the page's crop box,
+        /// or clipped away by its content — without clipping its paths, as <see cref="ClipPaths"/> also does?
+        /// Defaults to <see langword="false"/>.
+        /// <para>For reading the text a page shows at the cost of following its clipping path alone, not of clipping every path drawn.</para>
+        /// </summary>
+        public bool ClipLetters { get; set; } = false;
+
+        /// <summary>
         /// Should the parser ignore issues where the document does not conform to the PDF specification?
         /// </summary>
         public bool UseLenientParsing { get; set; } = true;
