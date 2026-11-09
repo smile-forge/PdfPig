@@ -648,33 +648,8 @@
                 data = memory.ToArray();
             }
 
-            NameToken colorSpace;
-            if (info.NumberOfComponents == 1)
-            {
-                colorSpace = NameToken.Devicegray;
-            }
-            else if (info.NumberOfComponents == 4)
-            {
-                colorSpace = NameToken.Devicecmyk;
-            }
-            else
-            {
-                colorSpace = NameToken.Devicergb;
-            }
-
-            var imgDictionary = new Dictionary<NameToken, IToken>
-            {
-                {NameToken.Type, NameToken.Xobject },
-                {NameToken.Subtype, NameToken.Image },
-                {NameToken.Width, new NumericToken(info.Width) },
-                {NameToken.Height, new NumericToken(info.Height) },
-                {NameToken.BitsPerComponent, new NumericToken(info.BitsPerComponent)},
-                {NameToken.ColorSpace, colorSpace},
-                {NameToken.Filter, NameToken.DctDecode},
-                {NameToken.Length, new NumericToken(data.Length)}
-            };
-
-            var reference = documentBuilder.AddImage(new DictionaryToken(imgDictionary), data);
+            var (imgDictionary, imgData) = ImageXObjects.Jpeg(data);
+            var reference = documentBuilder.AddImage(imgDictionary, imgData);
             var image = new AddedImage(reference.Data, info.Width, info.Height);
             AddImage(image, placement);
             return image;
@@ -748,79 +723,16 @@
                 placementRectangle = new PdfRectangle(0, 0, png.Width, png.Height);
             }
 
-            var data = new byte[png.Width * png.Height * 3];
-            int pixelIndex = 0;
+            var withMask = documentBuilder.ArchiveStandard != PdfAStandard.A1B && documentBuilder.ArchiveStandard != PdfAStandard.A1A;
+            var (imgDictionary, compressed, smaskDictionary, smaskData) = ImageXObjects.Png(png, withMask);
 
-            for (var rowIndex = 0; rowIndex < png.Height; rowIndex++)
+            if (smaskDictionary != null)
             {
-                for (var colIndex = 0; colIndex < png.Width; colIndex++)
-                {
-                    var pixel = png.GetPixel(colIndex, rowIndex);
-
-                    data[pixelIndex++] = pixel.R;
-                    data[pixelIndex++] = pixel.G;
-                    data[pixelIndex++] = pixel.B;
-                }
-            }
-
-            var widthToken = new NumericToken(png.Width);
-            var heightToken = new NumericToken(png.Height);
-
-            IndirectReferenceToken? smaskReference = null;
-
-            if (png.HasAlphaChannel && documentBuilder.ArchiveStandard != PdfAStandard.A1B && documentBuilder.ArchiveStandard != PdfAStandard.A1A)
-            {
-                var smaskData = new byte[data.Length / 3];
-                for (var rowIndex = 0; rowIndex < png.Height; rowIndex++)
-                {
-                    for (var colIndex = 0; colIndex < png.Width; colIndex++)
-                    {
-                        var pixel = png.GetPixel(colIndex, rowIndex);
-
-                        var index = rowIndex * png.Width + colIndex;
-                        smaskData[index] = pixel.A;
-                    }
-                }
-
-                var compressedSmask = DataCompressor.CompressBytes(smaskData);
-
                 // Create a soft-mask.
-                var smaskDictionary = new Dictionary<NameToken, IToken>
-                {
-                    {NameToken.Type, NameToken.Xobject},
-                    {NameToken.Subtype, NameToken.Image},
-                    {NameToken.Width, widthToken},
-                    {NameToken.Height, heightToken},
-                    {NameToken.ColorSpace, NameToken.Devicegray},
-                    {NameToken.BitsPerComponent, new NumericToken(8)},
-                    {NameToken.Decode, new ArrayToken(new IToken[] { new NumericToken(0), new NumericToken(1) })},
-                    {NameToken.Length, new NumericToken(compressedSmask.Length)},
-                    {NameToken.Filter, NameToken.FlateDecode}
-                };
-
-                smaskReference = documentBuilder.AddImage(new DictionaryToken(smaskDictionary), compressedSmask);
+                imgDictionary = imgDictionary.With(NameToken.Smask, documentBuilder.AddImage(smaskDictionary, smaskData!));
             }
 
-            var compressed = DataCompressor.CompressBytes(data);
-
-            var imgDictionary = new Dictionary<NameToken, IToken>
-            {
-                {NameToken.Type, NameToken.Xobject},
-                {NameToken.Subtype, NameToken.Image},
-                {NameToken.Width, widthToken},
-                {NameToken.Height, heightToken},
-                {NameToken.BitsPerComponent, new NumericToken(8)},
-                {NameToken.ColorSpace, NameToken.Devicergb},
-                {NameToken.Filter, NameToken.FlateDecode},
-                {NameToken.Length, new NumericToken(compressed.Length)}
-            };
-
-            if (smaskReference != null)
-            {
-                imgDictionary.Add(NameToken.Smask, smaskReference);
-            }
-
-            var reference = documentBuilder.AddImage(new DictionaryToken(imgDictionary), compressed);
+            var reference = documentBuilder.AddImage(imgDictionary, compressed);
 
             var resources = pageDictionary.GetOrCreateDict(NameToken.Resources);
             var xObjects = resources.GetOrCreateDict(NameToken.Xobject);

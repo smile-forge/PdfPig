@@ -47,6 +47,7 @@ internal sealed class DocumentAssembly
 
         var (planned, slots) = Plan(writer, byDocument);
         var context = new AssemblyContext(writer, sources, planned, slots, cancellation);
+        ReplaceImages(context, byDocument);
         LeaveOut(context);
 
         var annotations = new AnnotationCarrier();
@@ -122,6 +123,30 @@ internal sealed class DocumentAssembly
                 source.Document,
                 AssemblyRefusal.XfaForm,
                 "The document has an XFA form, which lays out the whole document itself and cannot follow its pages.");
+        }
+    }
+
+    /// <summary>
+    /// Writes each picture given in place of a source image, and points every reference to the image at it — before any
+    /// page is copied, so whatever draws the image, on a page or on a sheet, draws the picture.
+    /// </summary>
+    private void ReplaceImages(AssemblyContext context, Dictionary<PdfDocument, AssemblySource> byDocument)
+    {
+        var replaced = new HashSet<(AssemblySource, IndirectReference)>();
+        foreach (var replacement in options.ImageReplacements)
+        {
+            context.ThrowIfCancelled();
+            if (replacement is null || !byDocument.TryGetValue(replacement.Document, out var source))
+            {
+                continue;
+            }
+
+            if (!replaced.Add((source, replacement.Image)))
+            {
+                throw new ArgumentException($"Image {replacement.Image} is replaced more than once.", nameof(options));
+            }
+
+            context.Rewrites.Redirect(source, replacement.Image, replacement.Write(context.Writer));
         }
     }
 

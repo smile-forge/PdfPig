@@ -1,7 +1,7 @@
 namespace UglyToad.PdfPig.Writer;
 
 /// <summary>
-/// What an assembly is built on, beyond its pages.
+/// What an assembly is built on, beyond its pages, and the images it draws anew.
 /// </summary>
 public sealed class AssemblyOptions
 {
@@ -20,4 +20,10 @@ public sealed class AssemblyOptions
     /// The lowest version to write. The newest version among the source documents is written when it is higher.
     /// </summary>
     public double? Version { get; set; }
+
+    /// <summary>
+    /// Pictures written in place of images the source documents hold: every page that draws one draws its picture instead.
+    /// An image is replaced once; a picture for a document no page comes from is not written.
+    /// </summary>
+    public IReadOnlyList<AssembledImageReplacement> ImageReplacements { get; set; } = Array.Empty<AssembledImageReplacement>();
 }
