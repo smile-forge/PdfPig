@@ -338,6 +338,7 @@
                 "UglyToad.PdfPig.Util.Diacritics",
                 "UglyToad.PdfPig.Util.WhitespaceSizeStatistics",
                 "UglyToad.PdfPig.Writer.AssembledContentTag",
+                "UglyToad.PdfPig.Writer.AssembledImageReplacement",
                 "UglyToad.PdfPig.Writer.AssembledPage",
                 "UglyToad.PdfPig.Writer.AssembledPlacement",
                 "UglyToad.PdfPig.Writer.AssembledSheet",
