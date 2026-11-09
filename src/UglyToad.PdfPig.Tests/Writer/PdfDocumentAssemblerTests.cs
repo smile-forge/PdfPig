@@ -1,6 +1,7 @@
 namespace UglyToad.PdfPig.Tests.Writer
 {
     using Integration;
+    using PdfPig.Content;
     using PdfPig.Core;
     using PdfPig.Parser.Parts;
     using PdfPig.Tokens;
@@ -36,6 +37,58 @@ namespace UglyToad.PdfPig.Tests.Writer
             using var source = new SampleDocument("Alpha", "Beta").Open();
 
             Assert.Throws<ArgumentException>(() => Assemble(Page(source, 1), Page(source, 1)));
+        }
+
+        [Fact]
+        public void AnImageReplaced_IsDrawnInItsPlace_ByEveryPageThatDrewIt_OnAPageOrPlacedOnASheet()
+        {
+            var jpegBytes = File.ReadAllBytes(IntegrationHelpers.GetDocumentPath("smile-250-by-160.jpg", false));
+            var pngBytes = File.ReadAllBytes(IntegrationHelpers.GetDocumentPath("pdfpig.png", false));
+            var png = PdfPig.Images.Png.Png.Open(pngBytes);
+
+            var builder = new PdfDocumentBuilder();
+            var bounds = new PdfRectangle(25, 600, 225, 700);
+            var first = builder.AddPage(PageSize.A4);
+            var jpeg = first.AddJpeg(jpegBytes, bounds);
+            var second = builder.AddPage(PageSize.A4);
+            second.AddJpeg(jpeg, bounds);
+
+            using var source = PdfDocument.Open(builder.Build());
+            var size = source.GetPage(2).CropBox.Bounds;
+            using var output = new MemoryStream();
+            PdfDocumentAssembler.Assemble(
+                new[]
+                {
+                    AssembledSheet.Of(Page(source, 1)),
+                    new AssembledSheet(size.Width, size.Height, new[] { new AssembledPlacement(Page(source, 2), TransformationMatrix.Identity) }),
+                },
+                output,
+                new AssemblyOptions { ImageReplacements = new[] { AssembledImageReplacement.Png(source, jpeg.Reference, pngBytes) } });
+
+            using var result = PdfDocument.Open(output.ToArray(), ParsingOptions.LenientParsingOff);
+            foreach (var number in new[] { 1, 2 })
+            {
+                var image = Assert.Single(result.GetPage(number).GetImages());
+                Assert.Equal(bounds, image.BoundingBox);
+                Assert.Equal(png.Width, image.WidthInSamples);
+                Assert.Equal(png.Height, image.HeightInSamples);
+                Assert.True(image.TryGetPng(out _), "the picture is drawn, not the JPEG it replaced");
+            }
+        }
+
+        [Fact]
+        public void AnImageReplacedTwice_IsRefused()
+        {
+            var jpegBytes = File.ReadAllBytes(IntegrationHelpers.GetDocumentPath("smile-250-by-160.jpg", false));
+            var builder = new PdfDocumentBuilder();
+            var jpeg = builder.AddPage(PageSize.A4).AddJpeg(jpegBytes, new PdfRectangle(0, 0, 100, 100));
+            using var source = PdfDocument.Open(builder.Build());
+            var replacement = AssembledImageReplacement.Jpeg(source, jpeg.Reference, jpegBytes);
+
+            Assert.Throws<ArgumentException>(() => PdfDocumentAssembler.Assemble(
+                new[] { Page(source, 1) },
+                new MemoryStream(),
+                new AssemblyOptions { ImageReplacements = new[] { replacement, replacement } }));
         }
 
         [Fact]
