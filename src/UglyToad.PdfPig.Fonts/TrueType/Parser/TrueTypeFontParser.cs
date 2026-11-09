@@ -15,31 +15,107 @@
         /// </summary>
         public static TrueTypeFont Parse(TrueTypeDataBytes data)
         {
-            var version = data.Read32Fixed();
+            var tables = ReadTableDirectory(data, out var version);
+            return ParseTables(version, tables, data);
+        }
+
+        /// <summary>
+        /// Read the table directory of the font at the current position: its sfnt version, then the record of each
+        /// table by tag (ignoring case). Tables of zero length, other than glyf, are left out.
+        /// </summary>
+        internal static IReadOnlyDictionary<string, TrueTypeHeaderTable> ReadTableDirectory(TrueTypeDataBytes data, out float version)
+        {
+            version = data.Read32Fixed();
             int numberOfTables = data.ReadUnsignedShort();
 
-            // Read these data points to move to the correct data location.
-            // ReSharper disable UnusedVariable
-            var searchRange = data.ReadUnsignedShort();
-            var entrySelector = data.ReadUnsignedShort();
-            var rangeShift = data.ReadUnsignedShort();
-            // ReSharper restore UnusedVariable
+            // searchRange, entrySelector, rangeShift.
+            _ = data.ReadUnsignedShort();
+            _ = data.ReadUnsignedShort();
+            _ = data.ReadUnsignedShort();
 
             var tables = new Dictionary<string, TrueTypeHeaderTable>(StringComparer.OrdinalIgnoreCase);
 
             for (var i = 0; i < numberOfTables; i++)
             {
                 var table = ReadTable(data);
-
                 if (table.HasValue)
                 {
                     tables[table.Value.Tag] = table.Value;
                 }
             }
 
-            var result = ParseTables(version, tables, data);
+            return tables;
+        }
 
-            return result;
+        /// <summary>
+        /// Parse every font of a TrueType or OpenType font collection (a .ttc or .otc file, starting with "ttcf"), in
+        /// collection order. A font that cannot be parsed is skipped.
+        /// </summary>
+        /// <param name="data">The whole collection file.</param>
+        /// <exception cref="InvalidFontFormatException">The data is not a font collection.</exception>
+        public static IReadOnlyList<TrueTypeFont> ParseCollection(TrueTypeDataBytes data)
+        {
+            if (data is null)
+            {
+                throw new ArgumentNullException(nameof(data));
+            }
+
+            var offsets = ReadCollectionOffsets(data);
+            var fonts = new List<TrueTypeFont>(offsets.Count);
+            for (var i = 0; i < offsets.Count; i++)
+            {
+                try
+                {
+                    // Table offsets in a collection are from the start of the file, so each font is parsed in place.
+                    data.Seek(offsets[i]);
+                    fonts.Add(Parse(data));
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Could not parse font {i} of a font collection: {ex}");
+                }
+            }
+
+            return fonts;
+        }
+
+        /// <summary>
+        /// Whether the data starts with a font collection header ("ttcf").
+        /// </summary>
+        internal static bool IsCollection(ReadOnlySpan<byte> data)
+        {
+            return data.Length >= 4 && data.Slice(0, 4).SequenceEqual("ttcf"u8);
+        }
+
+        /// <summary>
+        /// The offset of each font's table directory in a font collection, read from its header.
+        /// </summary>
+        /// <exception cref="InvalidFontFormatException">The data is not a font collection.</exception>
+        internal static IReadOnlyList<long> ReadCollectionOffsets(TrueTypeDataBytes data)
+        {
+            // Header: "ttcf", major and minor version, number of fonts, then the offset of each font.
+            data.Seek(0);
+            if (data.Length < 12 || data.ReadTag() != "ttcf")
+            {
+                throw new InvalidFontFormatException("The data is not a font collection: it does not start with 'ttcf'.");
+            }
+
+            data.ReadUnsignedShort();
+            data.ReadUnsignedShort();
+
+            var count = data.ReadUnsignedInt();
+            if (count > (data.Length - 12) / 4)
+            {
+                throw new InvalidFontFormatException($"The font collection claims {count} fonts, more than it can hold.");
+            }
+
+            var offsets = new long[count];
+            for (var i = 0; i < offsets.Length; i++)
+            {
+                offsets[i] = data.ReadUnsignedInt();
+            }
+
+            return offsets;
         }
 
         private static TrueTypeHeaderTable? ReadTable(TrueTypeDataBytes data)

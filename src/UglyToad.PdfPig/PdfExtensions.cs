@@ -119,6 +119,7 @@
                 RunLengthFilter => 1.5,
                 LzwFilter => 2,
                 FlateFilter => 10,
+                CryptFilter => 1,
                 _ => 1000
             };
         }
@@ -133,6 +134,29 @@
         }
 
         private static IToken? ResolveInternal(this IToken? token, IPdfTokenScanner scanner, HashSet<IndirectReference> visited)
+        {
+            // As in DirectObjectFinder.TryGet, a token nested deeper than the maximum stack depth stays unresolved.
+            var entered = false;
+            try
+            {
+                scanner.StackDepthGuard.Enter();
+                entered = true;
+                return ResolveToken(token, scanner, visited);
+            }
+            catch (PdfDocumentStackDepthException)
+            {
+                return token;
+            }
+            finally
+            {
+                if (entered)
+                {
+                    scanner.StackDepthGuard.Exit();
+                }
+            }
+        }
+
+        private static IToken? ResolveToken(IToken? token, IPdfTokenScanner scanner, HashSet<IndirectReference> visited)
         {
             if (token is StreamToken stream)
             {
@@ -179,10 +203,19 @@
 
             if (token is ArrayToken arr)
             {
-                var resolvedItems = new List<IToken>();
+                var resolvedItems = new List<IToken>(arr.Length);
                 for (int i = 0; i < arr.Length; i++)
                 {
-                    var value = arr.Data[i] is IndirectReferenceToken reference ? scanner.Get(reference.Data)?.Data : arr.Data[i];
+                    var value = arr.Data[i];
+                    if (value is IndirectReferenceToken reference)
+                    {
+                        if (!visited.Add(reference.Data))
+                        {
+                            resolvedItems.Add(ResolveInternal(reference, scanner, visited));
+                            continue;
+                        }
+                        value = scanner.Get(reference.Data)?.Data;
+                    }
                     resolvedItems.Add(ResolveInternal(value, scanner, visited));
                 }
                 return new ArrayToken(resolvedItems);

@@ -5,6 +5,7 @@
     using System.IO;
     using Core;
     using Glyphs;
+    using Tables;
     using TrueType;
     using IndexMap = TrueTypeSubsetter.OldToNewGlyphIndex;
 
@@ -104,7 +105,7 @@
                     // Record the glyph location.
                     glyphLocations.Add((uint)writer.WrittenCount);
 
-                    var advanceWidth = advanceWidthTable.HorizontalMetrics[glyphsToCopyOriginalIndex[i]];
+                    var advanceWidth = GetHorizontalMetric(advanceWidthTable, glyphsToCopyOriginalIndex[i]);
                     advanceWidths.Add(advanceWidth);
 
                     if (newRecord.Type == GlyphType.Empty)
@@ -191,15 +192,27 @@
                 {
                     var glyphIndices = ReadCompositeGlyph(data);
 
-                    // Skip hinting instructions but include them in the output.
-                    var next = indexToLocationTable.GlyphOffsets[i + 1];
-                    data.Seek(glyphDirectory.Offset + next - 1);
+                    // Include any hinting instructions after the components in the output.
+                    var length = indexToLocationTable.GlyphOffsets[i + 1] - indexToLocationTable.GlyphOffsets[i];
 
-                    glyphRecords[i] = new GlyphRecord(glyphOffset, type, (int)(data.Position - glyphOffset), glyphIndices);
+                    glyphRecords[i] = new GlyphRecord(glyphOffset, type, (int)length, glyphIndices);
                 }
             }
 
             return glyphRecords;
+        }
+
+        private static HorizontalMetric GetHorizontalMetric(HorizontalMetricsTable table, int glyphIndex)
+        {
+            if (glyphIndex < table.HorizontalMetrics.Count)
+            {
+                return table.HorizontalMetrics[glyphIndex];
+            }
+
+            // Glyphs after the last metric use its advance width and only have a left side bearing.
+            var leftSideBearing = table.AdditionalLeftSideBearings[glyphIndex - table.HorizontalMetrics.Count];
+
+            return new HorizontalMetric(table.GetAdvanceWidth(glyphIndex), leftSideBearing);
         }
 
         private static int? GetAlreadyCopiedDependencyIndex(CompositeGlyphIndexReference dependency, IReadOnlyList<int> copiedGlyphOriginalIndices)

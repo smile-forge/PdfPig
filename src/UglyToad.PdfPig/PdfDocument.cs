@@ -16,6 +16,7 @@
     using Tokens;
     using Outline;
     using Outline.Destinations;
+    using System.Threading;
 
     /// <inheritdoc />
     /// <summary>
@@ -46,6 +47,11 @@
         /// Access to the underlying raw structure of the document.
         /// </summary>
         public Structure Structure { get; }
+
+        /// <summary>
+        /// The bytes the document was read from.
+        /// </summary>
+        internal IInputBytes InputBytes => inputBytes;
 
         /// <summary>
         /// Access to rare or advanced features of the PDF specification.
@@ -168,7 +174,15 @@
         /// </summary>
         /// <param name="pageNumber">The number of the page to return, this starts from 1.</param>
         /// <returns>The page.</returns>
-        public Page GetPage(int pageNumber)
+        public Page GetPage(int pageNumber) => GetPage(pageNumber, CancellationToken.None);
+
+        /// <summary>
+        /// Get the page with the specified page number (1 indexed).
+        /// </summary>
+        /// <param name="pageNumber">The number of the page to return, this starts from 1.</param>
+        /// <param name="token">The cancellation token.</param>
+        /// <returns>The page.</returns>
+        public Page GetPage(int pageNumber, CancellationToken token)
         {
             if (isDisposed)
             {
@@ -179,7 +193,7 @@
 
             try
             {
-                return pages.GetPage(pageNumber, namedDestinations, parsingOptions);
+                return pages.GetPage(pageNumber, namedDestinations, parsingOptions, token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -198,7 +212,16 @@
         /// <typeparam name="TPage"></typeparam>
         /// <param name="pageNumber">The number of the page to return, this starts from 1.</param>
         /// <returns>The page.</returns>
-        public TPage GetPage<TPage>(int pageNumber)
+        public TPage GetPage<TPage>(int pageNumber) => GetPage<TPage>(pageNumber, CancellationToken.None);
+
+        /// <summary>
+        /// Get the page with the specified page number (1 indexed), using the specified page factory.
+        /// </summary>
+        /// <typeparam name="TPage"></typeparam>
+        /// <param name="pageNumber">The number of the page to return, this starts from 1.</param>
+        /// <param name="token">The cancellation token.</param>
+        /// <returns>The page.</returns>
+        public TPage GetPage<TPage>(int pageNumber, CancellationToken token)
         {
             if (isDisposed)
             {
@@ -209,7 +232,7 @@
 
             try
             {
-                return pages.GetPage<TPage>(pageNumber, namedDestinations, parsingOptions);
+                return pages.GetPage<TPage>(pageNumber, namedDestinations, parsingOptions, token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -225,22 +248,34 @@
         /// <summary>
         /// Gets all pages in this document in order.
         /// </summary>
-        public IEnumerable<Page> GetPages()
+        public IEnumerable<Page> GetPages() => GetPages(CancellationToken.None);
+
+        /// <summary>
+        /// Gets all pages in this document in order.
+        /// </summary>
+        /// <param name="token">The cancellation token, checked as each page is read.</param>
+        public IEnumerable<Page> GetPages(CancellationToken token)
         {
             for (var i = 0; i < NumberOfPages; i++)
             {
-                yield return GetPage(i + 1);
+                yield return GetPage(i + 1, token);
             }
         }
 
         /// <summary>
         /// Gets all pages in this document in order, using the specified page factory.
         /// </summary>
-        public IEnumerable<TPage> GetPages<TPage>()
+        public IEnumerable<TPage> GetPages<TPage>() => GetPages<TPage>(CancellationToken.None);
+
+        /// <summary>
+        /// Gets all pages in this document in order, using the specified page factory.
+        /// </summary>
+        /// <param name="token">The cancellation token, checked as each page is read.</param>
+        public IEnumerable<TPage> GetPages<TPage>(CancellationToken token)
         {
             for (var i = 0; i < NumberOfPages; i++)
             {
-                yield return GetPage<TPage>(i + 1);
+                yield return GetPage<TPage>(i + 1, token);
             }
         }
 

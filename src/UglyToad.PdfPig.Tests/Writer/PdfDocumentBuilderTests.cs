@@ -1,10 +1,13 @@
 ﻿namespace UglyToad.PdfPig.Tests.Writer
 {
+    using System.Globalization;
+    using System.Text.RegularExpressions;
     using Content;
     using Integration;
     using PdfPig.Actions;
     using PdfPig.Core;
     using PdfPig.Fonts.Standard14Fonts;
+    using PdfPig.Parser.Parts;
     using PdfPig.Tokens;
     using PdfPig.Writer;
     using Tests.Fonts.TrueType;
@@ -227,6 +230,36 @@
             var result = AddFirstPage(source);
 
             Assert.DoesNotContain("OTHER PAGE", OtherEncodings.BytesAsLatin1String(result));
+        }
+
+        [Fact]
+        public void AddPageKeepsAnnotationAndPopupLinkedToTheirAnnotsEntries()
+        {
+            // Acrobat cannot edit or delete an annotation that is not an indirect object.
+            var source = BuildRawPdf(
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] /Resources << >> >>",
+                "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 5 0 R] >>",
+                "<< /Type /Annot /Subtype /Highlight /Rect [10 10 20 20] /QuadPoints [10 20 20 20 10 10 20 10] /P 3 0 R /Popup 5 0 R >>",
+                "<< /Type /Annot /Subtype /Popup /Rect [20 20 60 60] /Parent 4 0 R >>");
+
+            var result = AddFirstPage(source);
+
+            using (var document = PdfDocument.Open(result, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = document.Structure.TokenScanner;
+                var annots = document.GetPage(1).Dictionary.Get<ArrayToken>(NameToken.Annots, scanner);
+
+                Assert.Equal(2, annots.Length);
+                var highlightRef = Assert.IsType<IndirectReferenceToken>(annots[0]);
+                var popupRef = Assert.IsType<IndirectReferenceToken>(annots[1]);
+
+                var highlight = DirectObjectFinder.Get<DictionaryToken>(highlightRef, scanner);
+                var popup = DirectObjectFinder.Get<DictionaryToken>(popupRef, scanner);
+
+                Assert.Equal(popupRef.Data, Assert.IsType<IndirectReferenceToken>(highlight.Data[NameToken.Popup]).Data);
+                Assert.Equal(highlightRef.Data, Assert.IsType<IndirectReferenceToken>(popup.Data[NameToken.Parent]).Data);
+            }
         }
 
         private static byte[] AddFirstPage(byte[] source)
@@ -1102,6 +1135,339 @@
         }
 
         [Fact]
+        public void CanAddEmbeddedFile()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray());
+
+            var bytes = builder.Build();
+
+            WriteFile(nameof(CanAddEmbeddedFile), bytes);
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+
+                var file = Assert.Single(files);
+                Assert.Equal("hello.txt", file.Name);
+                Assert.Equal("hello.txt", file.FileSpecification);
+                Assert.Equal("Hello"u8.ToArray(), file.Bytes.ToArray());
+            }
+        }
+
+        [Fact]
+        public void EmbeddedFileNamesAreSortedInTheNameTree()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            foreach (var name in new[] { "b.txt", "請求書.pdf", "a.txt", "a", "Grüße.txt" })
+            {
+                builder.AddEmbeddedFile(name, "Hello"u8.ToArray());
+            }
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                // Keys are compared byte by byte, and a key written as UTF-16 starts with the byte order mark FE FF.
+                Assert.Equal(
+                    new[] { "Grüße.txt", "a", "a.txt", "b.txt", "請求書.pdf" },
+                    GetEmbeddedFilesNameTree(pdf).Data.Where((_, i) => i % 2 == 0).Select(x => ((StringToken)x).Data));
+            }
+        }
+
+        [Fact]
+        public void EmbeddedFileSpecificationHasTheFileNameAndTheUnicodeFileName()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("Grüße.txt", "Hello"u8.ToArray());
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                var fileSpecification = Assert.Single(GetEmbeddedFileSpecifications(pdf));
+
+                Assert.Equal(NameToken.Filespec, fileSpecification.Get<NameToken>(NameToken.Type, scanner));
+                Assert.Equal("Grüße.txt", fileSpecification.Get<StringToken>(NameToken.F, scanner).Data);
+                Assert.Equal("Grüße.txt", fileSpecification.Get<StringToken>(NameToken.Uf, scanner).Data);
+
+                var embeddedFile = fileSpecification.Get<DictionaryToken>(NameToken.Ef, scanner);
+                Assert.Equal(embeddedFile.Data[NameToken.F.Data], embeddedFile.Data[NameToken.Uf.Data]);
+            }
+        }
+
+        [Fact]
+        public void EmbeddedFileStreamHasTheMimeTypeSizeAndChecksum()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray());
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+                var stream = Assert.Single(files).Stream.StreamDictionary;
+
+                Assert.Equal(NameToken.EmbeddedFile, stream.Get<NameToken>(NameToken.Type, scanner));
+                Assert.Equal("application/octet-stream", stream.Get<NameToken>(NameToken.Subtype, scanner).Data);
+                Assert.Equal(NameToken.FlateDecode, stream.Get<NameToken>(NameToken.Filter, scanner));
+
+                var parameters = stream.Get<DictionaryToken>(NameToken.Params, scanner);
+                Assert.Equal(5, parameters.Get<NumericToken>(NameToken.Size, scanner).Int);
+
+                // The MD5 hash of "Hello".
+                Assert.Equal(
+                    new byte[] { 0x8B, 0x1A, 0x99, 0x53, 0xC4, 0x61, 0x12, 0x96, 0xA8, 0x27, 0xAB, 0xF8, 0xC4, 0x78, 0x04, 0xD7 },
+                    parameters.Get<HexToken>(NameToken.CheckSum, scanner).Bytes.ToArray());
+            }
+        }
+
+        [Fact]
+        public void EmbeddedFileHasTheMimeTypeAndDescriptionOfTheOptions()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("invoice.xml", "<Invoice/>"u8.ToArray(), new EmbeddedFileOptions
+            {
+                MimeType = "text/xml",
+                Description = "Invoice data"
+            });
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                var fileSpecification = Assert.Single(GetEmbeddedFileSpecifications(pdf));
+                Assert.Equal("Invoice data", fileSpecification.Get<StringToken>(NameToken.Desc, scanner).Data);
+
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+                var stream = Assert.Single(files).Stream.StreamDictionary;
+                Assert.Equal("text/xml", stream.Get<NameToken>(NameToken.Subtype, scanner).Data);
+            }
+        }
+
+        [Theory]
+        [InlineData(60, "D:20261027153000+01'00")]
+        [InlineData(330, "D:20261027153000+05'30")]
+        [InlineData(-210, "D:20261027153000-03'30")]
+        [InlineData(0, "D:20261027153000Z")]
+        public void EmbeddedFileHasTheModifiedDateOfTheOptions(int offsetMinutes, string expected)
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray(), new EmbeddedFileOptions
+            {
+                ModifiedDate = new DateTimeOffset(2026, 10, 27, 15, 30, 0, TimeSpan.FromMinutes(offsetMinutes))
+            });
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+                var parameters = Assert.Single(files).Stream.StreamDictionary.Get<DictionaryToken>(NameToken.Params, scanner);
+
+                Assert.Equal(expected, parameters.Get<StringToken>(NameToken.ModDate, scanner).Data);
+            }
+        }
+
+        [Fact]
+        public void EmbeddedFileWithoutModifiedDateHasTheTimeItWasAdded()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            // The date is written to the second.
+            var before = DateTimeOffset.Now.AddSeconds(-1);
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray());
+            var after = DateTimeOffset.Now;
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+                var parameters = Assert.Single(files).Stream.StreamDictionary.Get<DictionaryToken>(NameToken.Params, scanner);
+
+                // D:YYYYMMDDHHmmSSOHH'mm (ISO 32000-1, 7.9.4), with Z for Universal Time.
+                var date = Regex.Match(parameters.Get<StringToken>(NameToken.ModDate, scanner).Data, @"^D:(\d{14})(Z|([+-]\d{2})'(\d{2}))$");
+                Assert.True(date.Success);
+
+                var offset = date.Groups[2].Value == "Z" ? "+00:00" : $"{date.Groups[3].Value}:{date.Groups[4].Value}";
+                var modifiedDate = DateTimeOffset.ParseExact(date.Groups[1].Value + offset, "yyyyMMddHHmmsszzz", CultureInfo.InvariantCulture);
+                Assert.InRange(modifiedDate, before, after);
+            }
+        }
+
+        [Theory]
+        [InlineData(PdfAStandard.A3B)]
+        [InlineData(PdfAStandard.A3A)]
+        public void PdfA3DocumentAssociatesEachEmbeddedFileWithTheDocument(PdfAStandard standard)
+        {
+            var builder = new PdfDocumentBuilder
+            {
+                ArchiveStandard = standard
+            };
+
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("invoice.xml", "<Invoice/>"u8.ToArray(), new EmbeddedFileOptions
+            {
+                MimeType = "text/xml",
+                Relationship = AssociatedFileRelationship.Alternative
+            });
+            builder.AddEmbeddedFile("notes.txt", "Hello"u8.ToArray());
+
+            var bytes = builder.Build();
+
+            WriteFile(nameof(PdfA3DocumentAssociatesEachEmbeddedFileWithTheDocument) + standard, bytes);
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                var scanner = pdf.Structure.TokenScanner;
+                var fileSpecifications = GetEmbeddedFileSpecifications(pdf);
+
+                Assert.Equal(
+                    new[] { "Alternative", "Unspecified" },
+                    fileSpecifications.Select(x => x.Get<NameToken>(NameToken.AfRelationship, scanner).Data));
+
+                var associatedFiles = pdf.Structure.Catalog.CatalogDictionary.Get<ArrayToken>(NameToken.Af, scanner);
+                Assert.Equal(
+                    fileSpecifications,
+                    associatedFiles.Data.Select(x => pdf.Structure.GetObject(((IndirectReferenceToken)x).Data).Data));
+            }
+        }
+
+        [Fact]
+        public void CanGeneratePdfA3DocumentWithEmbeddedInvoice()
+        {
+            // The steps of the example GenerateDocumentWithEmbeddedFile.
+            var builder = new PdfDocumentBuilder
+            {
+                ArchiveStandard = PdfAStandard.A3B
+            };
+
+            var font = builder.AddTrueTypeFont(TrueTypeTestHelper.GetFileBytes("Roboto-Regular.ttf"));
+            var page = builder.AddPage(PageSize.A4);
+            page.AddText("Invoice 2026-001", 12, new PdfPoint(25, page.PageSize.Top - 50), font);
+
+            var invoice = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Invoice><ID>2026-001</ID></Invoice>"u8.ToArray();
+            builder.AddEmbeddedFile("invoice.xml", invoice, new EmbeddedFileOptions
+            {
+                MimeType = "text/xml",
+                Description = "The invoice as XML",
+                ModifiedDate = new DateTimeOffset(2026, 10, 27, 15, 30, 0, TimeSpan.FromHours(1)),
+                Relationship = AssociatedFileRelationship.Alternative
+            });
+
+            var bytes = builder.Build();
+
+            WriteFile(nameof(CanGeneratePdfA3DocumentWithEmbeddedInvoice), bytes);
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                Assert.Equal("Invoice 2026-001", pdf.GetPage(1).Text);
+
+                Assert.True(pdf.Advanced.TryGetEmbeddedFiles(out var files));
+                var file = Assert.Single(files);
+                Assert.Equal("invoice.xml", file.Name);
+                Assert.Equal(invoice, file.Bytes.ToArray());
+
+                Assert.True(pdf.TryGetXmpMetadata(out var xmp));
+                Assert.NotNull(xmp.GetXDocument());
+            }
+        }
+
+        [Fact]
+        public void DocumentThatIsNotPdfA3HasNoAssociatedFileEntries()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddPage(PageSize.A4);
+
+            builder.AddEmbeddedFile("invoice.xml", "<Invoice/>"u8.ToArray(), new EmbeddedFileOptions
+            {
+                Relationship = AssociatedFileRelationship.Alternative
+            });
+
+            var bytes = builder.Build();
+
+            using (var pdf = PdfDocument.Open(bytes, ParsingOptions.LenientParsingOff))
+            {
+                Assert.False(Assert.Single(GetEmbeddedFileSpecifications(pdf)).ContainsKey(NameToken.AfRelationship));
+                Assert.False(pdf.Structure.Catalog.CatalogDictionary.ContainsKey(NameToken.Af));
+            }
+        }
+
+        [Theory]
+        [InlineData(PdfAStandard.A1B)]
+        [InlineData(PdfAStandard.A1A)]
+        [InlineData(PdfAStandard.A2B)]
+        [InlineData(PdfAStandard.A2A)]
+        public void EmbeddedFilesAreNotSupportedForPdfA1AndPdfA2(PdfAStandard standard)
+        {
+            var builder = new PdfDocumentBuilder
+            {
+                ArchiveStandard = standard
+            };
+
+            builder.AddPage(PageSize.A4);
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray());
+
+            Assert.Throws<NotSupportedException>(() => builder.Build());
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void AddEmbeddedFileThrowsForMissingName(string? name)
+        {
+            var builder = new PdfDocumentBuilder();
+
+            Assert.ThrowsAny<ArgumentException>(() => builder.AddEmbeddedFile(name, "Hello"u8.ToArray()));
+        }
+
+        [Fact]
+        public void AddEmbeddedFileThrowsForNameThatIsAlreadyUsed()
+        {
+            var builder = new PdfDocumentBuilder();
+            builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray());
+
+            Assert.Throws<ArgumentException>(() => builder.AddEmbeddedFile("hello.txt", "Hello again"u8.ToArray()));
+        }
+
+        [Theory]
+        [InlineData("xml")]
+        [InlineData("text/")]
+        [InlineData("/xml")]
+        [InlineData("text/xml/xml")]
+        [InlineData("text/xml; charset=utf-8")]
+        public void AddEmbeddedFileThrowsForInvalidMimeType(string mimeType)
+        {
+            var builder = new PdfDocumentBuilder();
+
+            Assert.Throws<ArgumentException>(() => builder.AddEmbeddedFile("hello.txt", "Hello"u8.ToArray(), new EmbeddedFileOptions
+            {
+                MimeType = mimeType
+            }));
+        }
+
+        [Fact]
         public void CanWriteSinglePageWithPng()
         {
             var builder = new PdfDocumentBuilder();
@@ -1970,6 +2336,23 @@
                 Assert.Equal(25, goToAction.Destination.Coordinates.Left);
                 Assert.Equal(750, goToAction.Destination.Coordinates.Top);
             }
+        }
+
+        private static ArrayToken GetEmbeddedFilesNameTree(PdfDocument document)
+        {
+            var scanner = document.Structure.TokenScanner;
+            return document.Structure.Catalog.CatalogDictionary
+                .Get<DictionaryToken>(NameToken.Names, scanner)
+                .Get<DictionaryToken>(NameToken.EmbeddedFiles, scanner)
+                .Get<ArrayToken>(NameToken.Names, scanner);
+        }
+
+        private static DictionaryToken[] GetEmbeddedFileSpecifications(PdfDocument document)
+        {
+            return GetEmbeddedFilesNameTree(document).Data
+                .Where((_, i) => i % 2 == 1)
+                .Select(x => (DictionaryToken)document.Structure.GetObject(((IndirectReferenceToken)x).Data).Data)
+                .ToArray();
         }
 
         private static void WriteFile(string name, byte[] bytes, string extension = "pdf")

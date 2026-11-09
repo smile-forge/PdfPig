@@ -1,4 +1,4 @@
-﻿namespace UglyToad.PdfPig.PdfFonts.Parser.Handlers
+namespace UglyToad.PdfPig.PdfFonts.Parser.Handlers
 {
     using Cmap;
     using Core;
@@ -9,13 +9,14 @@
     using Fonts.Encodings;
     using Fonts.Standard14Fonts;
     using Fonts.Type1;
+    using Fonts.SystemFonts;
     using Fonts.Type1.Parser;
     using PdfPig.Parser.Parts;
     using Simple;
     using Tokenization.Scanner;
     using Tokens;
 
-    internal class Type1FontHandler : IFontHandler
+    internal sealed class Type1FontHandler : IFontHandler
     {
         private readonly IPdfTokenScanner pdfScanner;
         private readonly ILookupFilterProvider filterProvider;
@@ -40,6 +41,39 @@
             this.stackDepthGuard = stackDepthGuard;
         }
 
+        private Encoding? ReadStandard14Encoding(DictionaryToken dictionary, AdobeFontMetrics metrics)
+        {
+            return encodingReader.Read(dictionary, null, GetSymbolicBuiltInEncoding(metrics));
+        }
+
+        /// <summary>
+        /// A /Differences array without /BaseEncoding applies on top of the font's built-in encoding. For the
+        /// symbolic Standard 14 fonts (Symbol, ZapfDingbats) that is their own encoding, not StandardEncoding.
+        /// </summary>
+        /// <returns>The built-in encoding of a symbolic Standard 14 font, <see langword="null"/> for the others.</returns>
+        internal static Encoding? GetSymbolicBuiltInEncoding(AdobeFontMetrics metrics)
+        {
+            return string.Equals(metrics.EncodingScheme, "FontSpecific", StringComparison.Ordinal)
+                ? new AdobeFontMetricsEncoding(metrics)
+                : null;
+        }
+
+        /// <summary>
+        /// The Standard 14 metrics for a font drawn without its own program: by exact name, else by the loose match of
+        /// <see cref="Standard14.TryGetStandard14Font"/> (subset tag, case, spaces, hyphens and commas ignored).
+        /// </summary>
+        private static AdobeFontMetrics? GetStandard14MetricsLoosely(string fontName)
+        {
+            return Standard14.GetAdobeFontMetrics(fontName)
+                   ?? (Standard14.TryGetStandard14Font(fontName, out var font) ? Standard14.GetAdobeFontMetrics(font) : null);
+        }
+
+        private static SubstituteFont? GetSubstitute(string? fontName)
+        {
+            SystemFontFinder.TryGetSubstituteFont(fontName, out var substitute);
+            return substitute;
+        }
+
         public IFont Generate(DictionaryToken dictionary)
         {
             var usingStandard14Only = !dictionary.ContainsKey(NameToken.FirstChar) || !dictionary.ContainsKey(NameToken.Widths);
@@ -57,9 +91,9 @@
 
                 if (metrics != null)
                 {
-                    var overrideEncoding = encodingReader.Read(dictionary);
+                    var overrideEncoding = ReadStandard14Encoding(dictionary, metrics);
 
-                    return new Type1Standard14Font(metrics, overrideEncoding);
+                    return new Type1Standard14Font(metrics, overrideEncoding, GetSubstitute(metrics.FontName));
                 }
             }
 
@@ -90,9 +124,11 @@
                     {
                         if (isLenientParsing)
                         {
-                            // We can support a fallback here to return content.
+                            // We can support a fallback here to return content: a loose match of the name (e.g.
+                            // ABCDEF+Helvetica), else Times-Roman as PDFBox does without a descriptor.
                             // https://github.com/apache/pdfbox/blob/f81c7c5a06126db68aa985a0e755cdbffed7d270/pdfbox/src/main/java/org/apache/pdfbox/pdmodel/font/FontMapperImpl.java#L304
-                            metrics = Standard14.GetAdobeFontMetrics(Standard14Font.TimesRoman);
+                            metrics = GetStandard14MetricsLoosely(baseFontToken.Data)
+                                      ?? Standard14.GetAdobeFontMetrics(Standard14Font.TimesRoman);
                         }
                         else
                         {
@@ -101,9 +137,9 @@
                         }
                     }
 
-                    var overrideEncoding = encodingReader.Read(dictionary);
+                    var overrideEncoding = ReadStandard14Encoding(dictionary, metrics);
 
-                    return new Type1Standard14Font(metrics, overrideEncoding);
+                    return new Type1Standard14Font(metrics, overrideEncoding, GetSubstitute(metrics.FontName));
                 }
             }
 
@@ -134,6 +170,17 @@
                 }
             }
 
+            AdobeFontMetrics? standard14Metrics = null;
+            if (font is null && dictionary.TryGet(NameToken.BaseFont, pdfScanner, out NameToken? baseFont))
+            {
+                standard14Metrics = GetStandard14MetricsLoosely(baseFont.Data);
+                if (standard14Metrics is not null)
+                {
+                    // No program to read the built-in encoding from: it is the Standard 14 font's.
+                    fromFont = GetSymbolicBuiltInEncoding(standard14Metrics);
+                }
+            }
+
             var encoding = encodingReader.Read(dictionary, descriptor, fromFont);
 
             if (encoding is null && font != null && font.TryGetFirst(out var t1FontReplacement) && t1FontReplacement.Encoding?.Count > 0)
@@ -141,13 +188,8 @@
                 encoding = new BuiltInEncoding(t1FontReplacement.Encoding);
             }
 
-            AdobeFontMetrics? standard14Metrics = null;
-            if (font is null && dictionary.TryGet(NameToken.BaseFont, pdfScanner, out NameToken? baseFont))
-            {
-                standard14Metrics = Standard14.GetAdobeFontMetrics(baseFont.Data);
-            }
-
-            return new Type1FontSimple(name, firstCharacter, lastCharacter, widths, descriptor, encoding!, toUnicodeCMap!, font!, standard14Metrics);
+            return new Type1FontSimple(name, firstCharacter, lastCharacter, widths, descriptor, encoding!, toUnicodeCMap!, font!,
+                standard14Metrics, standard14Metrics is null ? null : GetSubstitute(standard14Metrics.FontName));
         }
 
         private Union<Type1Font, CompactFontFormatFontCollection>? ParseFontProgram(FontDescriptor descriptor)
@@ -171,9 +213,10 @@
 
                 var bytes = stream.Decode(filterProvider, pdfScanner);
 
-                // We have a Compact Font Format font rather than an Adobe Type 1 Font.
+                // We have a Compact Font Format font rather than an Adobe Type 1 Font: bare (Type1C) or as the CFF table
+                // of an OpenType font with PostScript outlines (OpenType).
                 if (stream.StreamDictionary.TryGet(NameToken.Subtype, out NameToken subTypeName)
-                && NameToken.Type1C.Equals(subTypeName))
+                    && (NameToken.Type1C.Equals(subTypeName) || NameToken.OpenType.Equals(subTypeName)))
                 {
                     var cffFont = CompactFontFormatParser.Parse(new CompactFontFormatData(bytes));
                     return Union<Type1Font, CompactFontFormatFontCollection>.Two(cffFont);

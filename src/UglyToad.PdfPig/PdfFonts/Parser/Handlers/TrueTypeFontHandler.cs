@@ -49,6 +49,15 @@
             this.cmapLocalCache = cmapLocalCache;
         }
 
+        /// <summary>
+        /// A non-embedded TrueType font with a descriptor, naming a Standard 14 font that has a registered substitute,
+        /// is read as that Standard 14 font, instead of with whichever TrueType font the machine has under that name.
+        /// </summary>
+        private static bool UseStandard14Substitute(string? baseFontName)
+        {
+            return SystemFontFinder.TryGetSubstituteFont(baseFontName, out _);
+        }
+
         public IFont Generate(DictionaryToken dictionary)
         {
             int? firstChar = null;
@@ -86,9 +95,14 @@
 
                 if (isStandard14)
                 {
-                    var fileSystemFont = systemFontFinder.GetTrueTypeFont(baseFont.Data);
+                    // With a substitute the outlines come from it, and the installed font is not read at all, so
+                    // bounding boxes come from the Standard 14 metrics and are the same on every machine.
+                    SystemFontFinder.TryGetSubstituteFont(baseFont.Data, out var substitute);
 
-                    var thisEncoding = encodingReader.Read(dictionary);
+                    var fileSystemFont = substitute is null ? systemFontFinder.GetTrueTypeFont(baseFont.Data) : null;
+
+                    var thisEncoding = encodingReader.Read(dictionary, null,
+                        Type1FontHandler.GetSymbolicBuiltInEncoding(standard14Font!));
 
                     if (thisEncoding is null)
                     {
@@ -112,7 +126,8 @@
                         standard14Font!,
                         thisEncoding,
                         fileSystemFont,
-                        new TrueTypeStandard14FallbackSimpleFont.MetricOverrides(firstChar, widthsOverride));
+                        new TrueTypeStandard14FallbackSimpleFont.MetricOverrides(firstChar, widthsOverride),
+                        substitute);
                 }
             }
 
@@ -121,6 +136,13 @@
             var widths = FontDictionaryAccessHelper.GetWidths(pdfScanner, dictionary);
 
             var descriptor = FontDictionaryAccessHelper.GetFontDescriptor(pdfScanner, dictionary);
+
+            if (descriptor.FontFile is null
+                && dictionary.TryGet(NameToken.BaseFont, pdfScanner, out NameToken? baseFontName)
+                && UseStandard14Substitute(baseFontName.Data))
+            {
+                return type1FontHandler.Generate(dictionary);
+            }
 
             var font = ParseTrueTypeFont(descriptor, out var actualHandler);
 

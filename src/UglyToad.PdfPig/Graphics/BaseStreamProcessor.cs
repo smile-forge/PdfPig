@@ -4,7 +4,7 @@
     using System.Collections.Generic;
     using System.Diagnostics;
     using System.Linq;
-    
+    using System.Threading;
     using Colors;
     using Colors.Icc;
     using Content;
@@ -90,6 +90,11 @@
         /// </summary>
         protected int TextSequence;
 
+        /// <summary>
+        /// The token checked while processing operations, including those of nested form XObjects.
+        /// </summary>
+        protected CancellationToken CancellationToken { get; }
+
         /// <inheritdoc/>
         public TextMatrices TextMatrices { get; } = new TextMatrices();
 
@@ -133,6 +138,14 @@
         private int _formXObjectDepth;
 
         /// <summary>
+        /// The most form XObject invocations processed for one page. Forms that each invoke the next more
+        /// than once stay within the nesting limit but multiply the work at every level.
+        /// </summary>
+        internal const int MaxFormXObjectCalls = 100_000;
+
+        private long _formXObjectCalls;
+
+        /// <summary>
         /// The form XObjects being processed by the enclosing form invocations. A form found here again
         /// is invoking itself, directly or through other forms.
         /// </summary>
@@ -156,8 +169,10 @@
             PageRotationDegrees rotation,
             in TransformationMatrix initialMatrix,
             IIccProfile? outputIntentProfile,
-            ParsingOptions parsingOptions)
+            ParsingOptions parsingOptions,
+            CancellationToken token)
         {
+            CancellationToken = token;
             this.PageNumber = pageNumber;
             this.ResourceStore = resourceStore;
             this.UserSpaceUnit = userSpaceUnit;
@@ -195,10 +210,17 @@
         /// <summary>
         /// Process the <see cref="IGraphicsStateOperation"/>s.
         /// </summary>
+        /// <remarks>
+        /// Checks <see cref="CancellationToken"/> before each operation. An override that does not call
+        /// the base method must check it itself, or cancellation is ignored for this content and the
+        /// form XObjects it invokes.
+        /// </remarks>
         protected virtual void ProcessOperations(IReadOnlyList<IGraphicsStateOperation> operations)
         {
             foreach (var stateOperation in operations)
             {
+                CancellationToken.ThrowIfCancellationRequested();
+
                 stateOperation.Run(this);
             }
         }
@@ -406,7 +428,12 @@
             PdfRectangle? result = null;
             if (type3Font.TryGetCharProc(code, out var charProcStream))
             {
+                CancellationToken.ThrowIfCancellationRequested();
+
                 var contentBytes = charProcStream.Decode(FilterProvider, PdfScanner);
+
+                CancellationToken.ThrowIfCancellationRequested();
+
                 var operations = PageContentParser.Parse(PageNumber,
                     new MemoryInputBytes(contentBytes),
                     ParsingOptions.Logger);
@@ -637,6 +664,23 @@
                 return;
             }
 
+            _formXObjectCalls++;
+            if (_formXObjectCalls > MaxFormXObjectCalls)
+            {
+                if (!ParsingOptions.UseLenientParsing)
+                {
+                    throw new PdfDocumentFormatException($"The page invokes XObject forms more than {MaxFormXObjectCalls} times, at the form named '{xObjectName}'.");
+                }
+
+                // Every later invocation is skipped too, so warn only once.
+                if (_formXObjectCalls == MaxFormXObjectCalls + 1)
+                {
+                    ParsingOptions.Logger.Warn($"The page invokes XObject forms more than {MaxFormXObjectCalls} times. The form named '{xObjectName}' and any invoked after it were skipped.");
+                }
+
+                return;
+            }
+
             bool resourcesLoaded = false;
             if (formStream.StreamDictionary.TryGet<DictionaryToken>(NameToken.Resources,
                     PdfScanner,
@@ -773,7 +817,6 @@
                 }
 
                 ProcessOperations(operations);
-
             }
             finally
             {
@@ -805,7 +848,11 @@
                 return cached;
             }
 
+            CancellationToken.ThrowIfCancellationRequested();
+
             var contentStream = formStream.Decode(FilterProvider, PdfScanner);
+
+            CancellationToken.ThrowIfCancellationRequested();
 
             var operations = PageContentParser.Parse(PageNumber,
                 new MemoryInputBytes(contentStream), ParsingOptions.Logger);

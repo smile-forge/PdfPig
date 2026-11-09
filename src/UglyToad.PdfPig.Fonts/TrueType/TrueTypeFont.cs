@@ -55,8 +55,11 @@
         /// </summary>
         public int NumberOfTables { get; }
 
+        /// <summary>
+        /// The glyph outlines of an OpenType font with PostScript outlines (a CFF table instead of glyf), if any.
+        /// </summary>
         // TODO - It would be better to use 'PdfCidCompactFontFormatFont' but the class is not accessible from here.
-        private readonly CompactFontFormatFontCollection? cffFontCollection;
+        internal CompactFontFormatFontCollection? CffFontCollection { get; }
 
         /// <summary>
         /// Create a new <see cref="TrueTypeFont"/>.
@@ -79,7 +82,7 @@
              * See https://github.com/BobLd/PdfPig.Rendering.Skia/issues/46
              * TODO - Add test coverage and need to review if the logic belongs here
              */
-            this.cffFontCollection = cffFontCollection;
+            CffFontCollection = cffFontCollection;
 
             if (TableRegister.CMapTable is not null)
             {
@@ -139,33 +142,9 @@
 
             if (TableRegister.GlyphTable is null)
             {
-                if (cffFontCollection is not null)
+                // An OpenType font with PostScript outlines, see TryGetCffGlyphName.
+                if (TryGetCffGlyphName(characterCode, characterCodeToGlyphId, out var cffFont, out var name))
                 {
-                    /*
-                     * The presence of a CFF (Compact Font Format) table in a TrueType font creates a hybrid situation where the font
-                     * container uses TrueType structure but contains PostScript-based glyph descriptions. According to the OpenType
-                     * specification, when a TrueType font contains a CFF table instead of a traditional glyf table, it indicates
-                     * "an OpenType font with PostScript outlines". This creates what's known as an OpenType CFF font, which uses
-                     * PostScript Type 2 charstrings for glyph descriptions rather than TrueType quadratic curves.
-                     *
-                     * This is to fix P2P-33713919.pdf
-                     * See https://github.com/BobLd/PdfPig.Rendering.Skia/issues/46
-                     *
-                     * When used as a CIDFont the CID is first mapped to a glyph index via the supplied
-                     * mapping (the CIDToGIDMap, or Identity when none), then resolved by glyph id in the
-                     * embedded CFF (see CompactFontFormatFont.GetCharacterName).
-                     *
-                     * See https://github.com/UglyToad/PdfPig/issues/1320
-                     */
-
-                    var cffFont = cffFontCollection.FirstFont;
-                    int cffGlyphId = characterCodeToGlyphId?.Invoke(characterCode) ?? characterCode;
-                    var name = cffFont.GetCharacterName(cffGlyphId, true);
-                    if (string.IsNullOrEmpty(name))
-                    {
-                        return false;
-                    }
-
                     var bbox = cffFont.GetCharacterBoundingBox(name);
                     if (bbox.HasValue)
                     {
@@ -210,37 +189,9 @@
 
             if (TableRegister.GlyphTable is null)
             {
-                if (cffFontCollection is not null)
-                {
-                    /*
-                     * The presence of a CFF (Compact Font Format) table in a TrueType font creates a hybrid situation where the font
-                     * container uses TrueType structure but contains PostScript-based glyph descriptions. According to the OpenType
-                     * specification, when a TrueType font contains a CFF table instead of a traditional glyf table, it indicates
-                     * "an OpenType font with PostScript outlines". This creates what's known as an OpenType CFF font, which uses
-                     * PostScript Type 2 charstrings for glyph descriptions rather than TrueType quadratic curves.
-                     *
-                     * This is to fix P2P-33713919.pdf
-                     * See https://github.com/BobLd/PdfPig.Rendering.Skia/issues/46
-                     *
-                     * When used as a CIDFont the CID is first mapped to a glyph index via the supplied
-                     * mapping (the CIDToGIDMap, or Identity when none), then resolved by glyph id in the
-                     * embedded CFF (see CompactFontFormatFont.GetCharacterName).
-                     *
-                     * See https://github.com/UglyToad/PdfPig/issues/1320
-                     */
-
-                    var cffFont = cffFontCollection.FirstFont;
-                    int cffGlyphId = characterCodeToGlyphId?.Invoke(characterCode) ?? characterCode;
-                    var name = cffFont.GetCharacterName(cffGlyphId, true);
-                    if (string.IsNullOrEmpty(name))
-                    {
-                        return false;
-                    }
-
-                    return cffFont.TryGetPath(name, out path);
-                }
-
-                return false;
+                // An OpenType font with PostScript outlines, see TryGetCffGlyphName.
+                return TryGetCffGlyphName(characterCode, characterCodeToGlyphId, out var cffFont, out var name)
+                       && cffFont.TryGetPath(name, out path);
             }
 
             if (!TryGetGlyphIndex(characterCode, characterCodeToGlyphId, out var index))
@@ -249,6 +200,55 @@
             }
 
             return TableRegister.GlyphTable.TryGetGlyphPath(index, out path);
+        }
+
+        /// <summary>
+        /// The CFF glyph for a character code, in a font with a CFF table instead of glyf.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The presence of a CFF (Compact Font Format) table in a TrueType font creates a hybrid situation where the font
+        /// container uses TrueType structure but contains PostScript-based glyph descriptions. According to the OpenType
+        /// specification, when a TrueType font contains a CFF table instead of a traditional glyf table, it indicates
+        /// "an OpenType font with PostScript outlines". This creates what's known as an OpenType CFF font, which uses
+        /// PostScript Type 2 charstrings for glyph descriptions rather than TrueType quadratic curves.
+        /// This is to fix P2P-33713919.pdf, see https://github.com/BobLd/PdfPig.Rendering.Skia/issues/46.
+        /// </para>
+        /// <para>
+        /// The glyph index is resolved as for glyf outlines (<see cref="TryGetGlyphIndex(int, Func{int, int?}, out int)"/>):
+        /// the supplied mapping (for a CIDFont the CIDToGIDMap, or Identity when none, see
+        /// https://github.com/UglyToad/PdfPig/issues/1320), else the font's cmap, which an installed font is read with.
+        /// Only a font without a cmap takes the code as the glyph index. The index is then resolved by glyph id in the
+        /// CFF (see <see cref="CompactFontFormatFont.GetCharacterName"/>).
+        /// </para>
+        /// <para>
+        /// TODO: for a CID-keyed CFF that treats the glyph index as a CID, which is only right when the charset maps
+        /// glyph indexes to themselves; see the note on CID-keyed fonts in SystemFontFinder.
+        /// </para>
+        /// </remarks>
+        private bool TryGetCffGlyphName(int characterCode, Func<int, int?>? characterCodeToGlyphId,
+            out CompactFontFormatFont cffFont, out string name)
+        {
+            cffFont = CffFontCollection?.FirstFont!;
+            name = null!;
+
+            if (cffFont is null)
+            {
+                return false;
+            }
+
+            if (!TryGetGlyphIndex(characterCode, characterCodeToGlyphId, out var cffGlyphId))
+            {
+                if (TableRegister.CMapTable is not null)
+                {
+                    return false;
+                }
+
+                cffGlyphId = characterCode;
+            }
+
+            name = cffFont.GetCharacterName(cffGlyphId, true);
+            return !string.IsNullOrEmpty(name);
         }
 
         /// <summary>
